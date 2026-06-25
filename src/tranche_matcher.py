@@ -1,29 +1,48 @@
 import re
 from difflib import SequenceMatcher
+
 from src.llm_matcher import ask_llm_for_tranche
+
 
 def normalize_name(value):
     value = str(value).upper()
     return re.sub(r"[^A-Z0-9]", "", value)
 
 
+def remove_version_suffix(tranche_norm):
+    """
+    Exemples :
+    3CBO1 -> 3CBO
+    3MURET2 -> 3MURET
+    6VERFE3 -> 6VERFE
+    3TR631 -> 3TR631  # on garde les TR entiers
+    """
+    if re.match(r"^\dTR\d+$", tranche_norm):
+        return tranche_norm
+
+    return re.sub(r"\d+$", "", tranche_norm)
+
+
 def score_match(filename, tranche):
     file_norm = normalize_name(filename)
     tranche_norm = normalize_name(tranche)
 
+    # On ignore les tranches trop courtes pour éviter SI, TG, etc.
+    if len(tranche_norm) < 4:
+        return 0.0
+
     if tranche_norm in file_norm:
         return 1.0
 
-    # Exemple : 3CBO1 doit matcher avec CBO
-    tranche_without_digits = re.sub(r"\d", "", tranche_norm)
+    tranche_base = remove_version_suffix(tranche_norm)
 
-    if tranche_without_digits and tranche_without_digits in file_norm:
-        return 0.95
+    if len(tranche_base) >= 4 and tranche_base in file_norm:
+        return 0.98
 
     return SequenceMatcher(None, file_norm, tranche_norm).ratio()
 
 
-def deterministic_match(filename, tranches, threshold=0.75):
+def deterministic_match(filename, tranches, threshold=0.85):
     scored = []
 
     for tranche in tranches:
@@ -59,6 +78,7 @@ def match_files_to_tranches(filenames, tranches):
             }
 
     return matches, unresolved
+
 
 def match_files_to_tranches_with_llm(filenames, tranches):
     matches, unresolved = match_files_to_tranches(filenames, tranches)
