@@ -1,28 +1,64 @@
 from lxml import etree
 
+SECTIONS = ["FonctionsNumériséesCCN", "EquipementsTiers"]
+
 
 def parse_fcs(file):
+    """
+    Retourne :
+    {
+      "site": {"code": "MATHA", "nom": "MATHA"},
+      "tranches": {
+         "4TR411": {
+            "LibelléLongTranche": "TRANSFORMATEUR 411",
+            "LibelléTT": "Compact_CBO_SECT_E411_sous-tranche_E13_SE",
+            "CodeSchémathèqueTT": "E13",
+            "FonctionsNumériséesCCN": {"SYNO": "SYNOPTIQUE"},
+            "EquipementsTiers": {},
+         },
+         ...
+      }
+    }
+
+    Deux changements par rapport a la version precedente :
+      - on conserve le LibelléLongObjetFonction, indispensable au
+        rapprochement par libelle long demande pour les EQ TIERS ;
+      - on conserve LibelléTT et CodeSchémathèqueTT, qui identifient les
+        tranches "raccordement transformateur" (regle sous-tranche E13).
+    """
     tree = etree.parse(file)
     root = tree.getroot()
 
-    result = {}
-
+    tranches = {}
     for tranche in root.xpath(".//*[local-name()='Tranche']"):
-        tranche_name = tranche.get("LibelléCourtTranche", "")
+        name = (tranche.get("LibelléCourtTranche") or "").strip()
+        if not name:
+            continue
 
-        result[tranche_name] = {
-            "FonctionsNumériséesCCN": set(),
-            "EquipementsTiers": set()
+        entry = {
+            "LibelléLongTranche": tranche.get("LibelléLongTranche") or "",
+            "LibelléTT": tranche.get("LibelléTT") or "",
+            "CodeSchémathèqueTT": tranche.get("CodeSchémathèqueTT") or "",
         }
 
-        for section_name in ["FonctionsNumériséesCCN", "EquipementsTiers"]:
-            objets = tranche.xpath(
-                f".//*[local-name()='{section_name}']/*[local-name()='ObjetFonction']"
+        for section in SECTIONS:
+            objects = tranche.xpath(
+                ".//*[local-name()='%s']/*[local-name()='ObjetFonction']" % section
             )
-
-            for obj in objets:
+            entry[section] = {}
+            for obj in objects:
                 code = obj.get("LibelléCourtObjetFonction")
-                if code:
-                    result[tranche_name][section_name].add(code.strip())
+                if not code:
+                    continue
+                label = obj.get("LibelléLongObjetFonction") or ""
+                entry[section][code.strip()] = label.strip()
 
-    return result
+        tranches[name] = entry
+
+    return {
+        "site": {
+            "code": root.get("CodeNationalSite") or "",
+            "nom": root.get("NomSite") or "",
+        },
+        "tranches": tranches,
+    }
