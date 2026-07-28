@@ -19,6 +19,8 @@ METHOD_STATUS = {
 
 # Statuts au niveau tranche (pas de ligne fonction a produire)
 TRANCHE_NO_FILE = "Nomenclature absente"
+TRANCHE_CONFLICT = "Plusieurs nomenclatures en conflit - à trancher manuellement"
+TRANCHE_EMPTY_FILE = "Nomenclature présente mais sans onglet exploitable"
 TRANCHE_TG_MISSING = "Nomenclature TG absente - comparaison poursuivie sans elle"
 TRANCHE_E13_OK = "OK via onglet sous-tranche E13"
 TRANCHE_E13_MISSING = "Nomenclature absente et aucun onglet sous-tranche E13 trouvé"
@@ -135,6 +137,17 @@ def compare_all(fcs, associations, parsed_by_file):
                 entry["avertissements"].append("%s : %s" % (filename, warning))
 
         if not files:
+            conflicting = sorted(
+                filename for filename, match in associations.items()
+                if match.get("tranche_visee") == name
+            )
+            if conflicting:
+                entry["statut_tranche"] = TRANCHE_CONFLICT
+                entry["avertissements"].append(
+                    "Fichiers en conflit : %s" % ", ".join(conflicting)
+                )
+                result[name] = entry
+                continue
             if is_tg_tranche(name):
                 entry["statut_tranche"] = TRANCHE_TG_MISSING
             elif is_raccordement_transformateur(info):
@@ -157,6 +170,19 @@ def compare_all(fcs, associations, parsed_by_file):
             sections.append("EquipementsTiers")
 
         merged = _merge_parsed([parsed_by_file[f] for f in files])
+
+        # Nomenclature reduite a sa page de garde (cas du fichier TGE de COMPI) :
+        # comparer produirait une liste de faux "présent FCS uniquement".
+        sheets = merged.get("sheets") or {}
+        if not any(sheets.get(key) for key in ("ccn", "bt", "tac", "cal")):
+            entry["statut_tranche"] = TRANCHE_EMPTY_FILE
+            entry["avertissements"].append(
+                "Aucun onglet CCN / Basse Tension / TAC / CAL dans %s"
+                % ", ".join(files)
+            )
+            result[name] = entry
+            continue
+
         for section in sections:
             entry["sections"][section] = compare_section(
                 merged, info.get(section, {}), section
@@ -187,6 +213,7 @@ def _merge_parsed(parsed_list):
         "labels": [],
         "notes": [],
         "has_e13": False,
+        "sheets": {"ccn": [], "bt": [], "tac": [], "cal": [], "e13": []},
     }
     for parsed in parsed_list:
         for key in ("FonctionsNumériséesCCN", "EquipementsTiers", "mnemonics"):
@@ -194,4 +221,6 @@ def _merge_parsed(parsed_list):
         merged["labels"].extend(parsed.get("labels", []))
         merged["notes"].extend(parsed.get("notes", []))
         merged["has_e13"] = merged["has_e13"] or parsed.get("has_e13", False)
+        for key, value in (parsed.get("sheets") or {}).items():
+            merged["sheets"].setdefault(key, []).extend(value)
     return merged

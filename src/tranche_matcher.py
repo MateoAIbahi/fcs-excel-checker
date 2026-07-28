@@ -1,3 +1,17 @@
+"""
+Association fichier de nomenclature <-> tranche FCS.
+
+Principe (corrigé) :
+  1. Source de vérité = cellule "Codification cellule DPC²" de l'onglet page de
+     garde. Elle contient le LibelléCourtTranche du FCS.
+  2. Le nom de fichier ne sert plus qu'à un contrôle de cohérence (garde-fou),
+     jamais à décider.
+  3. La Tranche Générale a un template différent (.xls, onglet "PdG ") et suit
+     un chemin de détection dédié.
+  4. Aucune tranche ne peut être attribuée deux fois : les collisions sont
+     signalées et laissées non résolues.
+"""
+
 import re
 import unicodedata
 
@@ -129,6 +143,177 @@ def find_tg_tranche(tranches):
 
 
 # --------------------------------------------------------------------------
+# Repli : identification par "Nom de cellule InfoPoste"
+# --------------------------------------------------------------------------
+# Certains sites (COMPI) laissent "Codification cellule DPC2" vide sur la
+# totalite des nomenclatures. Le seul identifiant restant est le nom de
+# cellule InfoPoste, du type "L31RESER - DEP 63kV N0 1 RESERVE".
+
+INFOPOSTE_LABEL = "NOMDECELLULEINFOPOSTE"
+TYPE_TRANCHE_LABEL = "TYPEDETRANCHE"
+CODE_REFERENCE_LABEL = "CODEREFERENCE"
+
+# Prefixes de code cellule -> radical de tranche DPC2.
+# Reprend les correspondances metier connues (BC -> Couplage, Cxxx -> COND,
+# PDBN -> differentielle de barres) et les complete.
+CODE_FAMILIES = [
+    (re.compile(r"^SS\d*[.\-_]?(\d+)$", re.I), "SEC", 1),
+    (re.compile(r"^BC(\d)(\d+)$", re.I), "COUPL", 2),
+    (re.compile(r"^AU(\d)(\d+)$", re.I), "AUTPOS", None),
+    (re.compile(r"^PDBN\w*$", re.I), "DIFB", None),
+    (re.compile(r"^C(\d{3})$", re.I), "COND", 1),
+    (re.compile(r"^CBO\w*$", re.I), "CBO", None),
+]
+
+TG_CODES = {"TGE", "TG", "TGENE"}
+TG_TYPE_CODES = {"009"}
+TG_REFERENCES = {"E9"}
+
+
+def read_field(rows, label):
+    """Lit une valeur de la page de garde a partir du libelle en colonne A."""
+    target = normalize_name(label)
+    for row in rows:
+        if not row or row[0] is None:
+            continue
+        if target in normalize_name(row[0]):
+            for value in row[1:]:
+                text = None if value is None else str(value).strip()
+                if text and text.lower() != "nan":
+                    return text
+    return None
+
+
+def split_tranche_name(name):
+    """
+    Decoupe un nom de tranche en (prefixe tension, radical, indice) :
+        '3CBO..1'  -> ('3', 'CBO',   '1')
+        '3ZCNR6.1' -> ('3', 'ZCNR6', '1')   <- le radical peut finir par un chiffre
+        '3TR311'   -> ('3', 'TR',    '311')
+        '4AUT.POS' -> ('4', 'AUTPOS', '')   <- le point n'est pas un separateur d'indice
+        '6COUPL'   -> ('6', 'COUPL', '')
+    Le point ne separe un indice que si ce qui le suit est numerique : sinon il
+    fait partie du radical, comme dans 'AUT.POS'.
+    """
+    raw = str(name or "").strip()
+    head = re.match(r"^(\d)(.*)$", raw)
+    if not head:
+        return None, normalize_name(raw), ""
+
+    prefix, rest = head.group(1), head.group(2)
+
+    if "." in rest:
+        base, _, tail = rest.rpartition(".")
+        if tail.isdigit():
+            return prefix, normalize_name(base), tail
+
+    match = re.match(r"^([A-Z]+?)(\d*)$", normalize_name(rest))
+    if match:
+        return prefix, match.group(1), match.group(2)
+    return prefix, normalize_name(rest), ""
+
+
+def voltage_prefix(text, voltage_prefixes):
+    """'DEP 63kV N0 1 RESERVE' -> '3', via la table deduite du FCS."""
+    if not text or not voltage_prefixes:
+        return None
+    for found in re.findall(r"(\d+)\s*kV", str(text), re.I):
+        prefix = voltage_prefixes.get("%skV" % found)
+        if prefix:
+            return prefix
+    return None
+
+
+def free_index(text):
+    """Indice de section : chiffre isole, hors tensions. 'BARRES 3 63kV' -> '3'."""
+    if not text:
+        return ""
+    cleaned = re.sub(r"\d+\s*kV", " ", str(text), flags=re.I)
+    cleaned = re.sub(r"\bN0?\b", " ", cleaned, flags=re.I)
+    found = re.findall(r"(?<![A-Za-z0-9])(\d+)(?![A-Za-z0-9])", cleaned)
+    return found[0] if found else ""
+
+
+def decode_infoposte(raw, voltage_prefixes):
+    """
+    Retourne (prefixe_tension, radical, indice) ou (None, None, None).
+      'L31RESER - DEP 63kV ...'  -> ('3', 'RESER', '1')
+      'Y63161 - DEP 225kV ...'   -> ('6', 'TR', '631')
+      'SS1.12 - SECT ... 63kV'   -> ('3', 'SEC', '12')
+      'CBO - CONTROLES BARRES 3 63kV' -> ('3', 'CBO', '3')
+    """
+    if not raw:
+        return None, None, None
+    code, _, description = str(raw).partition(" - ")
+    code = code.strip()
+    token = normalize_name(code)
+    prefix_from_text = voltage_prefix(description or raw, voltage_prefixes)
+
+    # Liaison : L{tension}{indice}{NOM}
+    match = re.match(r"^L(\d)(\d)([A-Z0-9]+)$", token)
+    if match:
+        return match.group(1), match.group(3), match.group(2)
+
+    # Transformateur : Y{numero}{tension}{indice}
+    match = re.match(r"^Y(\d{3})(\d)(\d)$", token)
+    if match:
+        return match.group(2), "TR", match.group(1)
+
+    for pattern, radical, index_group in CODE_FAMILIES:
+        match = pattern.match(code)
+        if not match:
+            continue
+        if radical == "AUTPOS":
+            return match.group(1), radical, ""
+        if radical == "COUPL":
+            return match.group(1), radical, match.group(2)
+        index = match.group(index_group) if index_group else free_index(description)
+        return prefix_from_text, radical, index
+
+    return None, None, None
+
+
+def match_by_infoposte(raw, tranches, voltage_prefixes):
+    """Resout un nom de cellule InfoPoste vers une tranche, ou None."""
+    prefix, radical, index = decode_infoposte(raw, voltage_prefixes)
+    if not radical:
+        return None
+
+    candidates = []
+    for tranche in tranches:
+        t_prefix, t_radical, t_index = split_tranche_name(tranche)
+        if prefix and t_prefix and t_prefix != prefix:
+            continue
+        if t_radical != radical:
+            continue
+        candidates.append((tranche, t_index))
+
+    if len(candidates) == 1:
+        return candidates[0][0]
+    if index:
+        exact = [name for name, t_index in candidates if t_index == index]
+        if len(exact) == 1:
+            return exact[0]
+    return None
+
+
+def looks_like_tg_page(rows):
+    """Reconnait la Tranche Generale depuis la page de garde seule."""
+    infoposte = read_field(rows, INFOPOSTE_LABEL)
+    if infoposte:
+        code = normalize_name(str(infoposte).partition(" - ")[0])
+        if code in TG_CODES:
+            return True
+    type_tranche = read_field(rows, TYPE_TRANCHE_LABEL)
+    if type_tranche and str(type_tranche).strip()[:3] in TG_TYPE_CODES:
+        return True
+    reference = read_field(rows, CODE_REFERENCE_LABEL)
+    if reference and normalize_name(reference) in TG_REFERENCES:
+        return True
+    return False
+
+
+# --------------------------------------------------------------------------
 # Garde-fou sur le nom de fichier
 # --------------------------------------------------------------------------
 
@@ -166,9 +351,12 @@ def filename_consistency_warning(filename, tranche):
 # Point d'entree
 # --------------------------------------------------------------------------
 
-def match_workbook_to_tranche(filename, sheet_names, pdg_rows, tranches, site=None):
+def match_workbook_to_tranche(filename, sheet_names, pdg_rows, tranches,
+                              site=None, voltage_prefixes=None):
     """
-    site : str ou iterable de str (typiquement CodeNationalSite ET NomSite).
+    site             : str ou iterable de str (CodeNationalSite ET NomSite).
+    voltage_prefixes : {'63kV': '3', '225kV': '6'}, deduit du FCS. Sert au
+                       repli par nom de cellule InfoPoste.
     Retourne un dict :
       {'tranche': str|None, 'method': str, 'raw': str|None, 'warning': str|None}
     """
@@ -217,7 +405,20 @@ def match_workbook_to_tranche(filename, sheet_names, pdg_rows, tranches, site=No
             "warning": f"Codification '{raw}' absente du FCS.",
         }
 
-    if looks_like_tg(sheet_names, pdg_rows):
+    # Repli 1 : nom de cellule InfoPoste (codification DPC2 vide sur certains sites)
+    infoposte = read_field(pdg_rows, INFOPOSTE_LABEL)
+    if infoposte:
+        tranche = match_by_infoposte(infoposte, tranches, voltage_prefixes)
+        if tranche:
+            return {
+                "tranche": tranche,
+                "method": "nom_cellule_infoposte",
+                "raw": infoposte,
+                "warning": ("Codification DPC2 absente : association deduite du "
+                            "nom de cellule InfoPoste '%s'." % infoposte),
+            }
+
+    if looks_like_tg(sheet_names, pdg_rows) or looks_like_tg_page(pdg_rows):
         tranche = find_tg_tranche(tranches)
         if tranche:
             return {"tranche": tranche, "method": "tranche_generale",
@@ -225,8 +426,9 @@ def match_workbook_to_tranche(filename, sheet_names, pdg_rows, tranches, site=No
         return {"tranche": None, "method": "tranche_generale",
                 "raw": None, "warning": "Fichier TG detecte mais absent du FCS."}
 
-    return {"tranche": None, "method": "echec", "raw": None,
-            "warning": "Aucune codification lisible sur la page de garde."}
+    return {"tranche": None, "method": "echec", "raw": infoposte,
+            "warning": ("Ni codification DPC2 ni nom de cellule InfoPoste "
+                        "exploitable sur la page de garde.")}
 
 
 def resolve_collisions(results):
@@ -245,6 +447,9 @@ def resolve_collisions(results):
             for filename in filenames:
                 results[filename]["tranche"] = None
                 results[filename]["method"] = "collision"
+                # On conserve la cible visee pour que le rapport distingue
+                # "aucune nomenclature" de "plusieurs nomenclatures en conflit".
+                results[filename]["tranche_visee"] = tranche
                 results[filename]["warning"] = (
                     f"Conflit : {', '.join(filenames)} pointent tous vers "
                     f"'{tranche}'. Association a trancher manuellement."

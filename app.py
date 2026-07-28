@@ -66,6 +66,7 @@ def analyse(fcs_file, excel_files):
     fcs = parse_fcs(fcs_file)
     tranche_names = list(fcs["tranches"])
     site = (fcs["site"]["code"], fcs["site"]["nom"])
+    volts = fcs.get("niveaux_tension", {})
 
     associations = {}
     parsed_by_file = {}
@@ -76,7 +77,7 @@ def analyse(fcs_file, excel_files):
         try:
             xls, sheet_names, pdg_rows = load_workbook_context(uploaded)
             associations[name] = match_workbook_to_tranche(
-                name, sheet_names, pdg_rows, tranche_names, site
+                name, sheet_names, pdg_rows, tranche_names, site, volts
             )
             parsed_by_file[name] = parse_excel_file(xls, name)
         except Exception as error:              # noqa: BLE001

@@ -29,6 +29,18 @@ def parse_fcs(file):
     tree = etree.parse(file)
     root = tree.getroot()
 
+    # Table NiveauTension -> prefixe de tranche, deduite du FCS lui-meme
+    # plutot que codee en dur : '63kV' -> '3', '225kV' -> '6', etc.
+    voltage_prefixes = {}
+    for level in root.xpath(".//*[local-name()='NiveauTension']"):
+        label = level.get("LibelléNiveauTension")
+        if not label:
+            continue
+        for child in level.xpath(".//*[local-name()='Tranche']"):
+            name = (child.get("LibelléCourtTranche") or "").strip()
+            if name and name[0].isdigit():
+                voltage_prefixes.setdefault(label, name[0])
+
     tranches = {}
     for tranche in root.xpath(".//*[local-name()='Tranche']"):
         name = (tranche.get("LibelléCourtTranche") or "").strip()
@@ -61,4 +73,5 @@ def parse_fcs(file):
             "nom": root.get("NomSite") or "",
         },
         "tranches": tranches,
+        "niveaux_tension": voltage_prefixes,
     }
