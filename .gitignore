@@ -1,6 +1,32 @@
+# Environnement
 .venv/
+
+# Données de travail
 data/
 reports/
 uploads/
+
+# Logs et exécution
+streamlit.log
+nohup.out
+
+# Rapports générés
+rapport_verification.xlsx
+rapport_comparaison_fcs_excel*.xlsx
+
+# Secrets et configuration locale
+.env
+.streamlit/secrets.toml
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+
+# Éditeurs et OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
