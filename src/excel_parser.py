@@ -293,10 +293,23 @@ def load_workbook_context(file, max_rows=30):
 
 def parse_excel_file(file, filename=None):
     xls = file if isinstance(file, pd.ExcelFile) else pd.ExcelFile(file)
-    buckets = classify_sheets(xls.sheet_names)
+    frames = {
+        name: pd.read_excel(xls, sheet_name=name, header=None)
+        for name in xls.sheet_names
+    }
+    return parse_sheet_frames(frames)
+
+
+def parse_sheet_frames(frames):
+    """
+    Coeur de l'analyse, commun aux classeurs Excel et aux nomenclatures PDF.
+    `frames` : {nom d'onglet: DataFrame sans en-tete}.
+    """
+    sheet_names = list(frames)
+    buckets = classify_sheets(sheet_names)
 
     result = {
-        "is_tg": is_tg_workbook(xls.sheet_names),
+        "is_tg": is_tg_workbook(sheet_names),
         "FonctionsNumériséesCCN": set(),
         "EquipementsTiers": set(),
         "mnemonics": set(),
@@ -310,8 +323,7 @@ def parse_excel_file(file, filename=None):
 
     if result["is_tg"]:
         for sheet_name in buckets["cal"]:
-            df = pd.read_excel(xls, sheet_name=sheet_name, header=None)
-            functions, labels, mode = extract_cal_sheet(df)
+            functions, labels, mode = extract_cal_sheet(frames[sheet_name])
             result["FonctionsNumériséesCCN"].update(functions)
             result["labels"].extend(labels)
             result["notes"].append("Onglet %s lu en mode '%s'." % (sheet_name, mode))
@@ -320,15 +332,15 @@ def parse_excel_file(file, filename=None):
         return result
 
     for sheet_name in buckets["ccn"]:
-        df = pd.read_excel(xls, sheet_name=sheet_name, header=None)
-        functions, labels, skipped = extract_ccn_sheet(df)
+        functions, labels, skipped = extract_ccn_sheet(frames[sheet_name])
         result["FonctionsNumériséesCCN"].update(functions)
         result["labels"].extend(labels)
         result["skipped_non"].update(skipped)
 
     for sheet_name in buckets["bt"] + buckets["tac"]:
-        df = pd.read_excel(xls, sheet_name=sheet_name, header=None)
-        codes, mnemonics, labels = extract_equipment_sheet(df, sheet_name)
+        codes, mnemonics, labels = extract_equipment_sheet(
+            frames[sheet_name], sheet_name
+        )
         result["EquipementsTiers"].update(codes)
         result["mnemonics"].update(mnemonics)
         result["labels"].extend(labels)

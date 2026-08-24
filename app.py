@@ -9,7 +9,7 @@ st.set_page_config(
 )
 
 from src.fcs_parser import parse_fcs
-from src.excel_parser import parse_excel_file, load_workbook_context
+from src.nomenclature import load_nomenclature
 from src.comparator import compare_all
 from src.report_generator import generate_excel_report
 from src.tranche_matcher import match_workbook_to_tranche, resolve_collisions
@@ -48,8 +48,8 @@ st.divider()
 fcs_file = st.file_uploader("1. Déposer le fichier FCS (.xml)", type=["xml"])
 
 excel_files = st.file_uploader(
-    "2. Déposer les nomenclatures Excel (Tranche Générale comprise)",
-    type=["xls", "xlsx"],
+    "2. Déposer les nomenclatures (Excel ou PDF, Tranche Générale comprise)",
+    type=["xls", "xlsx", "pdf"],
     accept_multiple_files=True,
 )
 
@@ -75,11 +75,11 @@ def analyse(fcs_file, excel_files):
     for uploaded in excel_files:
         name = uploaded.name
         try:
-            xls, sheet_names, pdg_rows = load_workbook_context(uploaded)
+            sheet_names, pdg_rows, parsed = load_nomenclature(uploaded, name)
             associations[name] = match_workbook_to_tranche(
                 name, sheet_names, pdg_rows, tranche_names, site, volts
             )
-            parsed_by_file[name] = parse_excel_file(xls, name)
+            parsed_by_file[name] = parsed
         except Exception as error:              # noqa: BLE001
             failures[name] = "%s : %s" % (type(error).__name__, error)
 
