@@ -1,3 +1,5 @@
+import re
+
 from src.utils import normalize
 from src.excel_parser import resolve_function
 
@@ -27,6 +29,26 @@ TRANCHE_E13_MISSING = "Nomenclature absente et aucun onglet sous-tranche E13 tro
 
 TG_ALIASES = {"TGENE", "TG", "TRANCHEGENERALE"}
 SECTIONS = ["FonctionsNumériséesCCN", "EquipementsTiers"]
+
+# Tranches hors perimetre de l'etude : elles ne sont ni comparees ni
+# signalees comme depourvues de nomenclature.
+EXCLUDED_TRANCHES = {"SAUX", "SI"}
+
+# Fonctions hors perimetre, par section.
+EXCLUDED_FUNCTIONS = {"EquipementsTiers": {"SONDE"}}
+
+# Mnemoniques d'equipement TAC : ce sont les materiels, pas les fonctions.
+TAC_EQUIPMENT_RE = re.compile(r"^TAC[-_ ]?N?\d*$", re.IGNORECASE)
+
+
+def is_excluded_tranche(name):
+    return normalize(name) in EXCLUDED_TRANCHES
+
+
+def is_excluded_function(section, code):
+    return normalize(code) in {
+        normalize(x) for x in EXCLUDED_FUNCTIONS.get(section, set())
+    }
 
 
 def is_tg_tranche(name):
@@ -59,6 +81,8 @@ def compare_section(parsed, fcs_objects, section):
     consumed = set()
 
     for code, label in sorted(fcs_objects.items()):
+        if is_excluded_function(section, code):
+            continue
         found, method, evidence = resolve_function(parsed, section, code, label)
         if found:
             if method in ("code", "mnemonique_indice"):
@@ -79,8 +103,16 @@ def compare_section(parsed, fcs_objects, section):
                 "Détail": "",
             })
 
+    matched_codes = {row["Fonction FCS"] for row in rows
+                     if row["Statut"].startswith("OK")}
+
     for raw in sorted(parsed.get(section, set())):
         if normalize(raw) in consumed:
+            continue
+        if is_excluded_function(section, raw):
+            continue
+        if section == "EquipementsTiers" and _is_redundant_equipment(
+                raw, matched_codes, parsed):
             continue
         rows.append({
             "Fonction Excel": raw,
@@ -91,6 +123,29 @@ def compare_section(parsed, fcs_objects, section):
         })
 
     return rows
+
+
+def _is_redundant_equipment(raw, matched_codes, parsed):
+    """
+    Ecarte les lignes "Présent Excel uniquement" qui font double emploi :
+
+    - le mnemonique parent d'une sous-fonction deja trouvee : si
+      'PXmulti-PX' est identifie, la ligne 'PXmulti' n'apporte rien ;
+    - les mnemoniques d'equipement TAC ('TAC-N1', 'TAC-N2') des lors qu'au
+      moins une fonction a ete reperee via l'onglet TAC.
+    """
+    token = normalize(raw)
+
+    for code in matched_codes:
+        if "-" in code and normalize(code.split("-", 1)[0]) == token:
+            return True
+
+    if TAC_EQUIPMENT_RE.match(str(raw).strip()):
+        tac_codes = {normalize(c) for c in parsed.get("tac_codes", set())}
+        if tac_codes & {normalize(c) for c in matched_codes}:
+            return True
+
+    return False
 
 
 # --------------------------------------------------------------------------
@@ -123,6 +178,8 @@ def compare_all(fcs, associations, parsed_by_file):
 
     result = {}
     for name, info in tranches.items():
+        if is_excluded_tranche(name):
+            continue
         files = by_tranche.get(name, [])
 
         entry = {
@@ -213,10 +270,12 @@ def _merge_parsed(parsed_list):
         "labels": [],
         "notes": [],
         "has_e13": False,
+        "tac_codes": set(),
         "sheets": {"ccn": [], "bt": [], "tac": [], "cal": [], "e13": []},
     }
     for parsed in parsed_list:
-        for key in ("FonctionsNumériséesCCN", "EquipementsTiers", "mnemonics"):
+        for key in ("FonctionsNumériséesCCN", "EquipementsTiers",
+                    "mnemonics", "tac_codes"):
             merged[key].update(parsed.get(key, set()))
         merged["labels"].extend(parsed.get("labels", []))
         merged["notes"].extend(parsed.get("notes", []))

@@ -83,7 +83,7 @@ def analyse(fcs_file, excel_files):
         except Exception as error:              # noqa: BLE001
             failures[name] = "%s : %s" % (type(error).__name__, error)
 
-    associations = resolve_collisions(associations)
+    associations = resolve_collisions(associations, tranche_names)
     comparison = compare_all(fcs, associations, parsed_by_file)
     report = generate_excel_report(comparison, associations)
     return fcs, associations, comparison, report, failures

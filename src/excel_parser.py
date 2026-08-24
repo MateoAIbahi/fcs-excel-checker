@@ -105,6 +105,22 @@ def extract_ccn_sheet(df):
 # Onglet CAL (Tranche Generale)
 # --------------------------------------------------------------------------
 
+# Colonne "Choix des fonctions" : Base / Option = O / Choix = C.
+# Une fonction en Option ou en Choix n'est retenue que si la colonne
+# "Selection" en face est renseignee ; une fonction Base l'est toujours.
+CHOICE_VALUES = {"O", "OPTION", "C", "CHOIX"}
+
+
+def is_retained_choice(decision, selection):
+    """Applique la regle de la colonne de choix de l'onglet CAL."""
+    token = normalize(decision)
+    if not token or is_excluded_option(decision):
+        return False
+    if token in CHOICE_VALUES:
+        return bool(normalize(selection)) and not is_excluded_option(selection)
+    return True
+
+
 CAL_START = "FONCTIONSNUMERISEESDANS"
 CAL_STOP = "FONCTIONSOUEQUIPEMENTSINTERFACES"
 
@@ -146,7 +162,7 @@ def extract_cal_sheet(df, decision_col=3, mark_col=4):
         if mode == "marqueur":
             retained = bool(mark) and not is_excluded_option(mark)
         else:
-            retained = not is_excluded_option(decision) and bool(decision)
+            retained = is_retained_choice(decision, mark)
 
         if retained:
             functions.add(code)
@@ -270,6 +286,7 @@ def parse_excel_file(file, filename=None):
         "FonctionsNumériséesCCN": set(),
         "EquipementsTiers": set(),
         "mnemonics": set(),
+        "tac_codes": set(),
         "labels": [],
         "skipped_non": set(),
         "sheets": {k: list(v) for k, v in buckets.items()},
@@ -301,6 +318,10 @@ def parse_excel_file(file, filename=None):
         result["EquipementsTiers"].update(codes)
         result["mnemonics"].update(mnemonics)
         result["labels"].extend(labels)
+        if sheet_name in buckets["tac"]:
+            # Sert au rapport : on masque les lignes 'TAC-Nx' des lors qu'une
+            # fonction a bien ete identifiee via cet onglet.
+            result["tac_codes"].update(codes - mnemonics)
 
     if not buckets["ccn"]:
         result["notes"].append("Aucun onglet CCN dans ce fichier.")

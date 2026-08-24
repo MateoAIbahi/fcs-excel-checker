@@ -314,6 +314,71 @@ def looks_like_tg_page(rows):
 
 
 # --------------------------------------------------------------------------
+# Desambiguisation des tranches transformateur
+# --------------------------------------------------------------------------
+# Deux nomenclatures transformateur peuvent porter des noms de cellule tres
+# proches et aboutir sur la meme tranche. Le "Type de tranche" de la page de
+# garde les separe sans ambiguite :
+#   003 - Tranche transformateur THT/HT      -> xTRx3x  (ex. 6TR631)
+#   013 - Tranche raccordement transformateur -> xTRx1x  (ex. 6TR611)
+# Le chiffre discriminant est celui du milieu du numero de transformateur.
+
+TRANSFORMER_TYPE_DIGIT = {"003": "3", "013": "1"}
+
+
+def transformer_digit(type_tranche):
+    """'013-Tranche raccordement transformateur ...' -> '1'."""
+    if not type_tranche:
+        return None
+    head = str(type_tranche).strip()[:3]
+    return TRANSFORMER_TYPE_DIGIT.get(head)
+
+
+def transformer_number_from_filename(filename):
+    """'14-SENAR_Y61161_1.1_241220.xlsx' -> '611'."""
+    match = re.search(r"Y(\d{3})\d?\d?", str(filename), re.IGNORECASE)
+    return match.group(1) if match else None
+
+
+def disambiguate_transformer(filename, match, tranches):
+    """
+    Tente de reattribuer une nomenclature transformateur prise dans une
+    collision. Retourne un nom de tranche ou None.
+    """
+    target = match.get("tranche") or match.get("tranche_visee")
+    if not target:
+        return None
+    prefix, radical, _ = split_tranche_name(target)
+    if radical != "TR":
+        return None
+
+    candidates = []
+    for tranche in tranches:
+        t_prefix, t_radical, t_index = split_tranche_name(tranche)
+        if t_radical == "TR" and t_prefix == prefix and t_index:
+            candidates.append((tranche, t_index))
+    if len(candidates) < 2:
+        return None
+
+    # 1. Le nom de fichier porte le numero de transformateur (Y611 / Y631).
+    number = transformer_number_from_filename(filename)
+    if number:
+        exact = [name for name, index in candidates if index == number]
+        if len(exact) == 1:
+            return exact[0]
+
+    # 2. A defaut, le type de tranche de la page de garde.
+    digit = transformer_digit(match.get("type_tranche"))
+    if digit:
+        exact = [name for name, index in candidates
+                 if len(index) >= 2 and index[1] == digit]
+        if len(exact) == 1:
+            return exact[0]
+
+    return None
+
+
+# --------------------------------------------------------------------------
 # Garde-fou sur le nom de fichier
 # --------------------------------------------------------------------------
 
@@ -367,6 +432,10 @@ def match_workbook_to_tranche(filename, sheet_names, pdg_rows, tranches,
     else:
         site_norms = tuple(normalize_name(s) for s in site if s)
     pdg_rows = list(pdg_rows or [])
+    context = {
+        "type_tranche": read_field(pdg_rows, TYPE_TRANCHE_LABEL),
+        "description": read_field(pdg_rows, "DESCRIPTION"),
+    }
 
     raw = read_codification(pdg_rows)
     if raw:
@@ -392,46 +461,57 @@ def match_workbook_to_tranche(filename, sheet_names, pdg_rows, tranches,
                 )
 
         if tranche:
-            return {
+            result = {
                 "tranche": tranche,
                 "method": method,
                 "raw": raw,
                 "warning": warning or filename_consistency_warning(filename, tranche),
             }
-        return {
+            result.update(context)
+            return result
+        result = {
             "tranche": None,
             "method": "page_de_garde_sans_correspondance",
             "raw": raw,
             "warning": f"Codification '{raw}' absente du FCS.",
         }
+        result.update(context)
+        return result
 
     # Repli 1 : nom de cellule InfoPoste (codification DPC2 vide sur certains sites)
     infoposte = read_field(pdg_rows, INFOPOSTE_LABEL)
     if infoposte:
         tranche = match_by_infoposte(infoposte, tranches, voltage_prefixes)
         if tranche:
-            return {
+            result = {
                 "tranche": tranche,
                 "method": "nom_cellule_infoposte",
                 "raw": infoposte,
                 "warning": ("Codification DPC2 absente : association deduite du "
                             "nom de cellule InfoPoste '%s'." % infoposte),
             }
+            result.update(context)
+            return result
 
     if looks_like_tg(sheet_names, pdg_rows) or looks_like_tg_page(pdg_rows):
         tranche = find_tg_tranche(tranches)
         if tranche:
-            return {"tranche": tranche, "method": "tranche_generale",
-                    "raw": None, "warning": None}
-        return {"tranche": None, "method": "tranche_generale",
-                "raw": None, "warning": "Fichier TG detecte mais absent du FCS."}
+            result = {"tranche": tranche, "method": "tranche_generale",
+                      "raw": None, "warning": None}
+        else:
+            result = {"tranche": None, "method": "tranche_generale", "raw": None,
+                      "warning": "Fichier TG detecte mais absent du FCS."}
+        result.update(context)
+        return result
 
-    return {"tranche": None, "method": "echec", "raw": infoposte,
-            "warning": ("Ni codification DPC2 ni nom de cellule InfoPoste "
-                        "exploitable sur la page de garde.")}
+    result = {"tranche": None, "method": "echec", "raw": infoposte,
+              "warning": ("Ni codification DPC2 ni nom de cellule InfoPoste "
+                          "exploitable sur la page de garde.")}
+    result.update(context)
+    return result
 
 
-def resolve_collisions(results):
+def resolve_collisions(results, tranches=None):
     """
     results : {filename: match_dict}
     Deux fichiers sur la meme tranche = anomalie. On les remet en non resolus
@@ -442,8 +522,31 @@ def resolve_collisions(results):
         if match.get("tranche"):
             by_tranche.setdefault(match["tranche"], []).append(filename)
 
+    tranches_ref = list(tranches) if tranches else list(by_tranche)
+
     for tranche, filenames in by_tranche.items():
         if len(filenames) > 1:
+            # Tranches transformateur : le type de tranche ou le numero porte
+            # par le nom de fichier permet souvent de les separer.
+            reassigned = {}
+            for filename in filenames:
+                better = disambiguate_transformer(
+                    filename, results[filename], tranches_ref
+                )
+                if better:
+                    reassigned[filename] = better
+            if (len(reassigned) == len(filenames)
+                    and len(set(reassigned.values())) == len(filenames)):
+                for filename, better in reassigned.items():
+                    results[filename]["tranche"] = better
+                    results[filename]["method"] = "desambiguisation_transformateur"
+                    results[filename]["warning"] = (
+                        "Plusieurs nomenclatures visaient '%s' ; celle-ci a ete "
+                        "rattachee a '%s' d'apres son type de tranche." 
+                        % (tranche, better)
+                    )
+                continue
+
             for filename in filenames:
                 results[filename]["tranche"] = None
                 results[filename]["method"] = "collision"
