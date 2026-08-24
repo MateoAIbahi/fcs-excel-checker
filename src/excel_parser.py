@@ -90,6 +90,14 @@ def extract_ccn_sheet(df):
 
         literal_index = columns.get("NOMLITERAL")
         literal = clean_code(row.iloc[literal_index]) if literal_index is not None and literal_index < len(row) else None
+
+        # Intitule de rubrique sans prefixe numerique ('Protection câble') :
+        # seule la colonne Designation est remplie, le reste de la ligne est
+        # vide. Une vraie fonction porte toujours un nom litteral ou un type.
+        if not literal and not option:
+            labels.append((code, "%s (rubrique)" % "CCN"))
+            continue
+
         if literal:
             labels.append((literal, code))
 
@@ -211,6 +219,12 @@ def extract_equipment_sheet(df, sheet_name):
 
         if mnemonic and is_section_title(mnemonic):
             labels.append((section_title_text(mnemonic), f"{sheet_name} (section)"))
+            continue
+
+        # Meme regle pour les onglets Basse Tension et TAC : un mnemonique
+        # seul sur sa ligne est un intitule de rubrique, pas un equipement.
+        if mnemonic and not designation and not option:
+            labels.append((mnemonic, "%s (rubrique)" % sheet_name))
             continue
 
         if mnemonic:
