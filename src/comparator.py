@@ -46,9 +46,19 @@ def is_excluded_tranche(name):
 
 
 def is_excluded_function(section, code):
-    return normalize(code) in {
-        normalize(x) for x in EXCLUDED_FUNCTIONS.get(section, set())
-    }
+    """
+    Exclusion par prefixe : 'SONDE' ecarte aussi 'Sonde température',
+    'SONDE 1', etc. Les nomenclatures nomment rarement ces lignes a
+    l'identique d'un site a l'autre.
+    """
+    token = normalize(code)
+    if not token:
+        return False
+    for excluded in EXCLUDED_FUNCTIONS.get(section, set()):
+        reference = normalize(excluded)
+        if reference and token.startswith(reference):
+            return True
+    return False
 
 
 def is_tg_tranche(name):
@@ -106,13 +116,18 @@ def compare_section(parsed, fcs_objects, section):
     matched_codes = {row["Fonction FCS"] for row in rows
                      if row["Statut"].startswith("OK")}
 
-    for raw in sorted(parsed.get(section, set())):
-        if normalize(raw) in consumed:
-            continue
-        if is_excluded_function(section, raw):
-            continue
+    remaining = [
+        raw for raw in sorted(parsed.get(section, set()))
+        if normalize(raw) not in consumed and not is_excluded_function(section, raw)
+    ]
+
+    # Tous les codes qui figureront au rapport pour cette section : sert a
+    # reperer les mnemoniques parents devenus redondants.
+    visible_codes = set(matched_codes) | set(remaining)
+
+    for raw in remaining:
         if section == "EquipementsTiers" and _is_redundant_equipment(
-                raw, matched_codes, parsed):
+                raw, visible_codes, parsed, matched_codes):
             continue
         rows.append({
             "Fonction Excel": raw,
@@ -125,19 +140,23 @@ def compare_section(parsed, fcs_objects, section):
     return rows
 
 
-def _is_redundant_equipment(raw, matched_codes, parsed):
+def _is_redundant_equipment(raw, visible_codes, parsed, matched_codes):
     """
     Ecarte les lignes "Présent Excel uniquement" qui font double emploi :
 
-    - le mnemonique parent d'une sous-fonction deja trouvee : si
-      'PXmulti-PX' est identifie, la ligne 'PXmulti' n'apporte rien ;
+    - le mnemonique parent d'une sous-fonction deja presente au rapport : si
+      'PXmulti-PX' y figure, la ligne 'PXmulti' n'apporte rien. La
+      sous-fonction compte qu'elle ait ete appariee ou non, sans quoi le
+      rapport afficherait les deux lignes cote a cote ;
     - les mnemoniques d'equipement TAC ('TAC-N1', 'TAC-N2') des lors qu'au
       moins une fonction a ete reperee via l'onglet TAC.
     """
     token = normalize(raw)
 
-    for code in matched_codes:
-        if "-" in code and normalize(code.split("-", 1)[0]) == token:
+    for code in visible_codes:
+        if not code or normalize(code) == token:
+            continue
+        if "-" in str(code) and normalize(str(code).split("-", 1)[0]) == token:
             return True
 
     if TAC_EQUIPMENT_RE.match(str(raw).strip()):
