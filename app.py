@@ -13,9 +13,6 @@ from src.comparator import (
     is_ok_status,
     STATUS_EXCEL_ONLY,
     STATUS_FCS_ONLY,
-    COLUMN_OK,
-    COLUMN_EXCEL_ONLY,
-    COLUMN_FCS_ONLY,
 )
 
 st.markdown(
@@ -158,11 +155,13 @@ if st.button("Lancer la comparaison"):
                 rows.append({
                     "Tranche": name,
                     "Section": section,
-                    COLUMN_OK: sum(1 for r in lines if is_ok_status(r["Statut"])),
-                    COLUMN_EXCEL_ONLY: sum(1 for r in lines
-                                           if r["Statut"] == STATUS_EXCEL_ONLY),
-                    COLUMN_FCS_ONLY: sum(1 for r in lines
-                                         if r["Statut"] == STATUS_FCS_ONLY),
+                    # En-tetes courts a l'ecran : les intitules complets du
+                    # rapport Excel tronquaient la derniere colonne.
+                    "Conformes": sum(1 for r in lines if is_ok_status(r["Statut"])),
+                    "Uniquement nomenclature": sum(
+                        1 for r in lines if r["Statut"] == STATUS_EXCEL_ONLY),
+                    "Uniquement FCS": sum(
+                        1 for r in lines if r["Statut"] == STATUS_FCS_ONLY),
                 })
         if rows:
-            st.dataframe(rows, use_container_width=True)
+            st.dataframe(rows, use_container_width=True, hide_index=True)
