@@ -7,6 +7,7 @@ from src.utils import (
     is_section_title,
     section_title_text,
     is_excluded_option,
+    is_negative_answer,
     is_tg_workbook,
     best_label_match,
 )
@@ -115,8 +116,24 @@ def extract_ccn_sheet(df):
 
 # Colonne "Choix des fonctions" : Base / Option = O / Choix = C.
 # Une fonction en Option ou en Choix n'est retenue que si la colonne
-# "Selection" en face est renseignee ; une fonction Base l'est toujours.
+# "Selection" en face porte une reponse positive ; une fonction Base l'est
+# sauf refus explicite (voir NEGATIVE_EXCLUDES_BASE).
 CHOICE_VALUES = {"O", "OPTION", "C", "CHOIX"}
+
+# Une reponse 'non ...' en colonne Selection ecarte-t-elle aussi une Base ?
+# Cas observe : ALTECH, Base, 'non suite à la FQR 04'. A confirmer par ICE ;
+# passer a False pour revenir a 'Base toujours retenue'.
+NEGATIVE_EXCLUDES_BASE = True
+
+# Lignes de l'onglet CAL a ignorer (demande ICE) : ce sont les systemes
+# eux-memes, pas des fonctions. Correspondance EXACTE : un prefixe ecarterait
+# d'autres codes commencant par 'TG'.
+CAL_IGNORED_CODES = {"TG", "TGSI"}
+
+# Codes a chercher dans TOUT l'onglet CAL, hors zone des fonctions et sans
+# regle de selection : ils portent un bloc (en-tete + sous-lignes) plutot
+# qu'une ligne Base/Option.
+CAL_WHOLE_SHEET_CODES = {"IFTG"}
 
 
 def is_retained_choice(decision, selection):
@@ -124,8 +141,11 @@ def is_retained_choice(decision, selection):
     token = normalize(decision)
     if not token or is_excluded_option(decision):
         return False
+    refused = is_excluded_option(selection) or is_negative_answer(selection)
     if token in CHOICE_VALUES:
-        return bool(normalize(selection)) and not is_excluded_option(selection)
+        return bool(normalize(selection)) and not refused
+    if NEGATIVE_EXCLUDES_BASE and refused:
+        return False
     return True
 
 
@@ -133,42 +153,74 @@ CAL_START = "FONCTIONSNUMERISEESDANS"
 CAL_STOP = "FONCTIONSOUEQUIPEMENTSINTERFACES"
 
 
+def _cal_function_rows(df):
+    """
+    Lignes de la zone des fonctions de l'onglet CAL (entre CAL_START et
+    CAL_STOP) portant un code en colonne A. Rend (code, libelle, row).
+    """
+    started = False
+    for _, row in df.iterrows():
+        code = clean_code(row.iloc[0]) if len(row) > 0 else None
+        label = clean_code(row.iloc[1]) if len(row) > 1 else None
+        if label and CAL_STOP in normalize(label):
+            return
+        if label and CAL_START in normalize(label):
+            started = True
+            continue
+        if started and code:
+            yield code, label, row
+
+
 def detect_cal_mode(df, mark_col=4):
     """
     Deux revisions du template E9 coexistent :
       - indice H : colonne E = 'Options retenues par DI', marquee 'X'
-      - indice K : colonne E = 'Selection', valeurs 'C', 'Telealarme', 'Non'
-                   -> c'est la colonne D ('Choix des fonctions') qui decide
+      - indice K : colonne E = 'Selection', valeurs 'C', 'Telealarme',
+                   'non (...)' -> c'est la colonne D qui decide
     On tranche sur la donnee, pas sur le libelle d'en-tete, qui varie.
+
+    Seules les lignes de fonction (zone CAL, code en colonne A) comptent :
+    les sous-lignes du bloc migration IF-TG portent un 'X' en colonne E
+    meme en indice K, et suffisaient a basculer tout l'onglet en mode
+    'marqueur' (les Base non marquees etaient alors ignorees).
     """
-    for _, row in df.iterrows():
-        if mark_col < len(row) and normalize(row.iloc[mark_col]) == "X":
-            return "marqueur"
-    return "decision"
+    marks, others = 0, 0
+    for _, _, row in _cal_function_rows(df):
+        value = clean_code(row.iloc[mark_col]) if mark_col < len(row) else None
+        if not value:
+            continue
+        if normalize(value) == "X":
+            marks += 1
+        else:
+            others += 1
+    return "marqueur" if marks > others else "decision"
 
 
 def extract_cal_sheet(df, decision_col=3, mark_col=4):
+    """
+    Retourne (functions, labels, mode, all_codes).
+    all_codes : tous les codes de la colonne A, sur tout l'onglet, pour les
+                recherches de CAL_WHOLE_SHEET_CODES.
+    """
     functions, labels = set(), []
     mode = detect_cal_mode(df, mark_col)
-    started = False
 
+    all_codes = set()
     for _, row in df.iterrows():
         code = clean_code(row.iloc[0]) if len(row) > 0 else None
-        label = clean_code(row.iloc[1]) if len(row) > 1 else None
+        if code:
+            all_codes.add(code)
 
-        if label and CAL_STOP in normalize(label):
-            break
-        if label and CAL_START in normalize(label):
-            started = True
-            continue
-        if not started or not code:
+    for code, label, row in _cal_function_rows(df):
+        if normalize(code) in CAL_IGNORED_CODES:
             continue
 
         decision = clean_code(row.iloc[decision_col]) if decision_col < len(row) else None
         mark = clean_code(row.iloc[mark_col]) if mark_col < len(row) else None
 
         if mode == "marqueur":
-            retained = bool(mark) and not is_excluded_option(mark)
+            retained = (bool(mark) and not is_excluded_option(mark)
+                        and not is_negative_answer(mark))
         else:
             retained = is_retained_choice(decision, mark)
 
@@ -177,7 +229,7 @@ def extract_cal_sheet(df, decision_col=3, mark_col=4):
             if label:
                 labels.append((label, code))
 
-    return functions, labels, mode
+    return functions, labels, mode, all_codes
 
 
 # --------------------------------------------------------------------------
@@ -293,8 +345,14 @@ def load_workbook_context(file, max_rows=30):
 
 def parse_excel_file(file, filename=None):
     xls = file if isinstance(file, pd.ExcelFile) else pd.ExcelFile(file)
+    # Seuls les onglets exploites sont lus : les onglets 'DOC ...' des
+    # nomenclatures DIFB pesent plusieurs dizaines de Mo et ne servent pas.
+    # Les autres restent presents (vides) pour la detection du template.
+    buckets = classify_sheets(xls.sheet_names)
+    wanted = {name for names in buckets.values() for name in names}
     frames = {
-        name: pd.read_excel(xls, sheet_name=name, header=None)
+        name: (pd.read_excel(xls, sheet_name=name, header=None)
+               if name in wanted else pd.DataFrame())
         for name in xls.sheet_names
     }
     return parse_sheet_frames(frames)
@@ -318,13 +376,15 @@ def parse_sheet_frames(frames):
         "skipped_non": set(),
         "sheets": {k: list(v) for k, v in buckets.items()},
         "has_e13": bool(buckets["e13"]),
+        "cal_all_codes": set(),
         "notes": [],
     }
 
     if result["is_tg"]:
         for sheet_name in buckets["cal"]:
-            functions, labels, mode = extract_cal_sheet(frames[sheet_name])
+            functions, labels, mode, all_codes = extract_cal_sheet(frames[sheet_name])
             result["FonctionsNumériséesCCN"].update(functions)
+            result["cal_all_codes"].update(all_codes)
             result["labels"].extend(labels)
             result["notes"].append("Onglet %s lu en mode '%s'." % (sheet_name, mode))
         if not buckets["cal"]:
@@ -363,6 +423,49 @@ def parse_sheet_frames(frames):
 
 NUMBERED_INSTANCE_RE = "^%s\\d+$"
 
+# Equivalences de codes FCS -> nomenclature, conditionnees au libelle long.
+# (section, code FCS, libelle long FCS ou None, code nomenclature)
+# Le libelle est compare apres normalisation (casse, accents, ponctuation).
+FUNCTION_EQUIVALENCES = [
+    ("EquipementsTiers", "UT",
+     "Unité de travée différentielle de barres numérique", "PDBN"),
+]
+
+
+def _instance_order(raw):
+    """'DDS2' < 'DDS10' : tri naturel, le plus petit indice d'abord."""
+    token = normalize(raw)
+    match = re.match(r"^(.*?)(\d+)$", token)
+    if match:
+        return (match.group(1), int(match.group(2)), token)
+    return (token, -1, token)
+
+
+def _find_code(parsed, section, target):
+    """Code normalise `target` present tel quel ou sous forme indicee."""
+    for raw in parsed.get(section, set()):
+        if normalize(raw) == target:
+            return raw
+    if section == "EquipementsTiers":
+        pattern = re.compile(NUMBERED_INSTANCE_RE % re.escape(target))
+        for raw in sorted(parsed.get("mnemonics", set()), key=_instance_order):
+            if normalize(raw) == target or pattern.match(normalize(raw)):
+                return raw
+    return None
+
+
+def resolve_equivalence(parsed, section, code, long_label):
+    """Retourne le code nomenclature equivalent trouve, ou None."""
+    for eq_section, fcs_code, fcs_label, nom_code in FUNCTION_EQUIVALENCES:
+        if eq_section != section or normalize(fcs_code) != normalize(code):
+            continue
+        if fcs_label is not None and normalize(fcs_label) != normalize(long_label):
+            continue
+        found = _find_code(parsed, section, normalize(nom_code))
+        if found:
+            return found
+    return None
+
 
 def resolve_function(parsed, section, code, long_label=None):
     """
@@ -375,10 +478,21 @@ def resolve_function(parsed, section, code, long_label=None):
     if target in direct:
         return True, "code", direct[target]
 
+    if section == "FonctionsNumériséesCCN" and target in CAL_WHOLE_SHEET_CODES:
+        for raw in parsed.get("cal_all_codes", set()):
+            if normalize(raw) == target:
+                return True, "onglet_cal_complet", raw
+
+    equivalent = resolve_equivalence(parsed, section, code, long_label)
+    if equivalent:
+        return True, "equivalence", equivalent
+
     if section == "EquipementsTiers":
         # 'DIFC' present sous la forme 'DIFC11', 'DDS' sous 'DDS1'
+        # Parcours trie : un set n'a pas d'ordre stable d'une execution a
+        # l'autre, et 'DDS' tombait tantot sur 'DDS1', tantot sur 'DDS2'.
         pattern = re.compile(NUMBERED_INSTANCE_RE % re.escape(target))
-        for raw in parsed.get("mnemonics", set()):
+        for raw in sorted(parsed.get("mnemonics", set()), key=_instance_order):
             if pattern.match(normalize(raw)):
                 return True, "mnemonique_indice", raw
 

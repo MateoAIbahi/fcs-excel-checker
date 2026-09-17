@@ -52,6 +52,21 @@ def is_excluded_option(value):
     return token in EXCLUDED_OPTION_VALUES
 
 
+NEGATIVE_ANSWER_RE = re.compile(r"^\s*(non|n)\b", re.IGNORECASE)
+
+
+def is_negative_answer(value):
+    """
+    True si une reponse en texte libre commence par 'non' :
+    'non (car que sur poste blindé)', 'Non suite à la FQR 04', 'N'.
+    Les nomenclatures TG recentes justifient leurs refus dans la cellule,
+    ce qui rend la comparaison exacte a 'NON' insuffisante.
+    """
+    if value is None:
+        return False
+    return bool(NEGATIVE_ANSWER_RE.match(strip_accents(value)))
+
+
 def is_retained_option(value):
     """True si la cellule marque explicitement la fonction comme retenue."""
     token = normalize(value)

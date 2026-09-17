@@ -6,14 +6,22 @@ from src.comparator import (
     STATUS_OK,
     STATUS_OK_INSTANCE,
     STATUS_OK_LABEL,
+    STATUS_OK_EQUIVALENCE,
+    STATUS_OK_CAL,
     STATUS_EXCEL_ONLY,
     STATUS_FCS_ONLY,
+    COLUMN_OK,
+    COLUMN_EXCEL_ONLY,
+    COLUMN_FCS_ONLY,
+    is_ok_status,
 )
 
 COLORS = {
     STATUS_OK: "#D9EAD3",
     STATUS_OK_INSTANCE: "#E8F0DA",
     STATUS_OK_LABEL: "#E8F0DA",
+    STATUS_OK_EQUIVALENCE: "#E8F0DA",
+    STATUS_OK_CAL: "#E8F0DA",
     STATUS_EXCEL_ONLY: "#FCE5CD",
     STATUS_FCS_ONLY: "#F4CCCC",
 }
@@ -22,7 +30,10 @@ COLUMN_WIDTHS = {
     "Tranche": 14,
     "Section": 24,
     "Fichier(s)": 38,
-    "Statut": 26,
+    "Statut": 44,
+    COLUMN_OK: 16,
+    COLUMN_EXCEL_ONLY: 26,
+    COLUMN_FCS_ONLY: 26,
     "Statut tranche": 46,
     "Fonction Excel": 30,
     "Fonction FCS": 20,
@@ -46,9 +57,9 @@ def _build_frames(comparison):
                 "Tranche": tranche,
                 "Section": "",
                 "Fichier(s)": files,
-                "OK": 0,
-                "Présent Excel uniquement": 0,
-                "Présent FCS uniquement": 0,
+                COLUMN_OK: 0,
+                COLUMN_EXCEL_ONLY: 0,
+                COLUMN_FCS_ONLY: 0,
                 "Statut tranche": entry["statut_tranche"],
                 "Avertissements": warnings,
             })
@@ -68,16 +79,14 @@ def _build_frames(comparison):
                     "Détail": row["Détail"],
                 })
 
-            ok = (counts.get(STATUS_OK, 0)
-                  + counts.get(STATUS_OK_INSTANCE, 0)
-                  + counts.get(STATUS_OK_LABEL, 0))
+            ok = sum(n for status, n in counts.items() if is_ok_status(status))
             summary.append({
                 "Tranche": tranche,
                 "Section": section,
                 "Fichier(s)": files,
-                "OK": ok,
-                "Présent Excel uniquement": counts.get(STATUS_EXCEL_ONLY, 0),
-                "Présent FCS uniquement": counts.get(STATUS_FCS_ONLY, 0),
+                COLUMN_OK: ok,
+                COLUMN_EXCEL_ONLY: counts.get(STATUS_EXCEL_ONLY, 0),
+                COLUMN_FCS_ONLY: counts.get(STATUS_FCS_ONLY, 0),
                 "Statut tranche": "",
                 "Avertissements": warnings,
             })

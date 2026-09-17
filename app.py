@@ -10,7 +10,15 @@ st.set_page_config(
 
 from src.fcs_parser import parse_fcs
 from src.nomenclature import load_nomenclature
-from src.comparator import compare_all
+from src.comparator import (
+    compare_all,
+    is_ok_status,
+    STATUS_EXCEL_ONLY,
+    STATUS_FCS_ONLY,
+    COLUMN_OK,
+    COLUMN_EXCEL_ONLY,
+    COLUMN_FCS_ONLY,
+)
 from src.report_generator import generate_excel_report
 from src.tranche_matcher import match_workbook_to_tranche, resolve_collisions
 
@@ -172,11 +180,11 @@ if st.button("Lancer la comparaison"):
                 rows.append({
                     "Tranche": name,
                     "Section": section,
-                    "OK": sum(1 for r in lines if r["Statut"].startswith("OK")),
-                    "Excel seul": sum(1 for r in lines
-                                      if r["Statut"].startswith("Présent Excel")),
-                    "FCS seul": sum(1 for r in lines
-                                    if r["Statut"].startswith("Présent FCS")),
+                    COLUMN_OK: sum(1 for r in lines if is_ok_status(r["Statut"])),
+                    COLUMN_EXCEL_ONLY: sum(1 for r in lines
+                                           if r["Statut"] == STATUS_EXCEL_ONLY),
+                    COLUMN_FCS_ONLY: sum(1 for r in lines
+                                         if r["Statut"] == STATUS_FCS_ONLY),
                 })
         if rows:
             st.dataframe(rows, use_container_width=True)

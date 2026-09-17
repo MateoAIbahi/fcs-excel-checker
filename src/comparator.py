@@ -1,23 +1,47 @@
 import re
 
 from src.utils import normalize
-from src.excel_parser import resolve_function
+from src.excel_parser import resolve_function, CAL_IGNORED_CODES
 
 # --------------------------------------------------------------------------
-# Statuts
+# Statuts (seul endroit ou ces libelles sont definis : le rapport et
+# l'interface les importent, aucune logique ne doit tester leur texte)
 # --------------------------------------------------------------------------
 
-STATUS_OK = "OK"
-STATUS_OK_INSTANCE = "OK (mnémonique indicé)"
-STATUS_OK_LABEL = "OK (libellé long)"
-STATUS_EXCEL_ONLY = "Présent Excel uniquement"
-STATUS_FCS_ONLY = "Présent FCS uniquement"
+STATUS_OK = "Comparaison conforme"
+STATUS_OK_INSTANCE = "Comparaison conforme (mnémonique indicé)"
+STATUS_OK_LABEL = "Comparaison conforme (libellé long)"
+STATUS_OK_EQUIVALENCE = "Comparaison conforme (équivalence de code)"
+STATUS_OK_CAL = "Comparaison conforme (recherche dans tout l'onglet CAL)"
+STATUS_EXCEL_ONLY = "Fonction présente uniquement dans le fichier de nomenclature"
+STATUS_FCS_ONLY = "Fonction présente uniquement dans le fichier FCS"
+
+OK_STATUSES = {
+    STATUS_OK, STATUS_OK_INSTANCE, STATUS_OK_LABEL,
+    STATUS_OK_EQUIVALENCE, STATUS_OK_CAL,
+}
+
+# Titres des colonnes de comptage de l'onglet Resume
+COLUMN_OK = "Comparaison conforme"
+COLUMN_EXCEL_ONLY = "Fonctions présentes uniquement dans le fichier de nomenclature"
+COLUMN_FCS_ONLY = "Fonctions présentes uniquement dans le fichier FCS"
 
 METHOD_STATUS = {
     "code": STATUS_OK,
     "mnemonique_indice": STATUS_OK_INSTANCE,
     "libelle_long": STATUS_OK_LABEL,
+    "equivalence": STATUS_OK_EQUIVALENCE,
+    "onglet_cal_complet": STATUS_OK_CAL,
 }
+
+# Methodes dont la preuve est un code de la nomenclature : ce code ne doit
+# plus apparaitre en 'present uniquement dans la nomenclature'.
+CONSUMING_METHODS = {"code", "mnemonique_indice", "equivalence",
+                     "onglet_cal_complet"}
+
+
+def is_ok_status(status):
+    return status in OK_STATUSES
 
 # Statuts au niveau tranche (pas de ligne fonction a produire)
 TRANCHE_NO_FILE = "Nomenclature absente"
@@ -81,21 +105,23 @@ def is_raccordement_transformateur(tranche_info):
 # Comparaison d'une section
 # --------------------------------------------------------------------------
 
-def compare_section(parsed, fcs_objects, section):
+def compare_section(parsed, fcs_objects, section, ignored_codes=()):
     """
-    parsed      : sortie de parse_excel_file
-    fcs_objects : {code: libellé long} pour la section
+    parsed        : sortie de parse_excel_file
+    fcs_objects   : {code: libellé long} pour la section
+    ignored_codes : codes normalises ecartes des deux cotes (egalite exacte)
     Retourne la liste de lignes du rapport.
     """
     rows = []
     consumed = set()
+    ignored = {normalize(c) for c in ignored_codes}
 
     for code, label in sorted(fcs_objects.items()):
-        if is_excluded_function(section, code):
+        if is_excluded_function(section, code) or normalize(code) in ignored:
             continue
         found, method, evidence = resolve_function(parsed, section, code, label)
         if found:
-            if method in ("code", "mnemonique_indice"):
+            if method in CONSUMING_METHODS:
                 consumed.add(normalize(evidence))
             rows.append({
                 "Fonction Excel": evidence if method != "libelle_long" else "",
@@ -114,11 +140,13 @@ def compare_section(parsed, fcs_objects, section):
             })
 
     matched_codes = {row["Fonction FCS"] for row in rows
-                     if row["Statut"].startswith("OK")}
+                     if is_ok_status(row["Statut"])}
 
     remaining = [
         raw for raw in sorted(parsed.get(section, set()))
-        if normalize(raw) not in consumed and not is_excluded_function(section, raw)
+        if normalize(raw) not in consumed
+        and normalize(raw) not in ignored
+        and not is_excluded_function(section, raw)
     ]
 
     # Tous les codes qui figureront au rapport pour cette section : sert a
@@ -259,9 +287,11 @@ def compare_all(fcs, associations, parsed_by_file):
             result[name] = entry
             continue
 
+        # TG / TGSI : ecartes des deux cotes sur la Tranche Generale.
+        ignored = CAL_IGNORED_CODES if is_tg_tranche(name) else ()
         for section in sections:
             entry["sections"][section] = compare_section(
-                merged, info.get(section, {}), section
+                merged, info.get(section, {}), section, ignored
             )
 
         for note in merged.get("notes", []):
@@ -290,11 +320,12 @@ def _merge_parsed(parsed_list):
         "notes": [],
         "has_e13": False,
         "tac_codes": set(),
+        "cal_all_codes": set(),
         "sheets": {"ccn": [], "bt": [], "tac": [], "cal": [], "e13": []},
     }
     for parsed in parsed_list:
         for key in ("FonctionsNumériséesCCN", "EquipementsTiers",
-                    "mnemonics", "tac_codes"):
+                    "mnemonics", "tac_codes", "cal_all_codes"):
             merged[key].update(parsed.get(key, set()))
         merged["labels"].extend(parsed.get("labels", []))
         merged["notes"].extend(parsed.get("notes", []))
