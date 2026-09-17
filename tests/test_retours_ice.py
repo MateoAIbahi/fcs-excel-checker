@@ -11,7 +11,6 @@ import pandas as pd
 from openpyxl import load_workbook
 
 from src.excel_parser import (
-    detect_cal_mode,
     extract_cal_sheet,
     is_retained_choice,
     parse_sheet_frames,
@@ -81,18 +80,38 @@ def test_negative_answer():
     assert not is_negative_answer(None)
 
 
-def test_x_du_bloc_migration_ne_bascule_pas_en_mode_marqueur():
-    assert detect_cal_mode(cal_frame_k()) == "decision"
+def cal_frame_j():
+    """Indice J (CASSE) : 'X' sur les seules Options, Base jamais cochees."""
+    rows = [
+        ["Code", "Désignation", "", "Choix des fonctions", "Séléction Choix = C"],
+        [None, "Fonctions numérisées dans la TG", None, None, None],
+        ["REPORT", "Report des alarmes", None, "option", "X"],
+        ["APPELPORTETEL", "Appel porte", None, "Base", None],
+        ["TGSI", "Système sécurisé", None, "Base", None],
+        ["MODEXP", "Modes d'exploitation", None, "Option", "X"],
+        [None, None, "Téléalarme", "Base", "X"],
+        ["DANGER", "Alarme danger", None, "Base", None],
+        ["SIRSF6", "Sirène SF6", None, "Option", None],
+        [None, "Fonctions ou équipements interfacés", None, None, None],
+        ["IF-TG", "Migration", "Non utilisé pour un poste neuf", None, None],
+        [None, "Calculateur 48V", "Pour PMP", "O", "X"],
+    ]
+    return pd.DataFrame(rows)
 
 
-def test_mode_marqueur_toujours_detecte_en_indice_h():
-    functions, _, mode, _ = extract_cal_sheet(cal_frame_h())
-    assert mode == "marqueur"
+def test_indice_j_base_non_cochees_retenues():
+    functions, _, all_codes = extract_cal_sheet(cal_frame_j())
+    assert functions == {"REPORT", "APPELPORTETEL", "MODEXP", "DANGER"}
+    assert "IF-TG" in all_codes
+
+
+def test_indice_h_marqueur():
+    functions, _, _ = extract_cal_sheet(cal_frame_h())
     assert functions == {"SYNO", "CA"}
 
 
 def test_selection_cal_indice_k():
-    functions, _, _, all_codes = extract_cal_sheet(cal_frame_k())
+    functions, _, all_codes = extract_cal_sheet(cal_frame_k())
     assert functions == {"SYNO", "SIRSUTCTCO2", "TELEAL"}
     assert "IF-TG" in all_codes
 
@@ -100,7 +119,10 @@ def test_selection_cal_indice_k():
 def test_base_toujours_retenue_sans_refus():
     assert is_retained_choice("Base", None)
     assert is_retained_choice("Base", "C")
+    assert is_retained_choice("Oui", None)
+    assert not is_retained_choice("non", None)
     assert not is_retained_choice("Option", None)
+    assert is_retained_choice("option", "X")
 
 
 def tg_fcs(functions):

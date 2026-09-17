@@ -28,6 +28,23 @@ def normalize_name(value):
     return re.sub(r"[^A-Z0-9]", "", text.upper())
 
 
+# Un meme radical s'ecrit differemment selon la source : 'AUT.POS' dans les
+# nomenclatures, 'AUT.POST' pour la tranche 0 kV de certains FCS (MAUGE).
+RADICAL_ALIASES = {"AUTPOST": "AUTPOS"}
+
+
+def canonical_radical(radical):
+    return RADICAL_ALIASES.get(radical, radical)
+
+
+def canonical_code(code_norm):
+    """'AUTPOST' -> 'AUTPOS', '6AUTPOST' -> '6AUTPOS' (codes normalises)."""
+    for alias, canonical in RADICAL_ALIASES.items():
+        if code_norm.endswith(alias):
+            return code_norm[:-len(alias)] + canonical
+    return code_norm
+
+
 def strip_site_prefix(code_norm, site_norms):
     """'MATHA6TR642' -> '6TR642' (les rédacteurs préfixent parfois le site)."""
     for site_norm in sorted(site_norms or (), key=len, reverse=True):
@@ -99,8 +116,9 @@ def build_tranche_index(tranches, site_norms=()):
     exact = {}
     loose = {}
     for tranche in tranches:
-        exact[strip_site_prefix(normalize_name(tranche), site_norms)] = tranche
-        key = strip_site_prefix(normalize_name(strip_tranche_index(tranche)), site_norms)
+        exact[canonical_code(strip_site_prefix(normalize_name(tranche), site_norms))] = tranche
+        key = canonical_code(strip_site_prefix(
+            normalize_name(strip_tranche_index(tranche)), site_norms))
         loose.setdefault(key, []).append(tranche)
     loose = {k: v[0] for k, v in loose.items() if len(v) == 1}
     return exact, loose
@@ -195,6 +213,11 @@ def split_tranche_name(name):
     Le point ne separe un indice que si ce qui le suit est numerique : sinon il
     fait partie du radical, comme dans 'AUT.POS'.
     """
+    prefix, radical, index = _split_tranche_name(name)
+    return prefix, canonical_radical(radical), index
+
+
+def _split_tranche_name(name):
     raw = str(name or "").strip()
     head = re.match(r"^(\d)(.*)$", raw)
     if not head:
@@ -440,7 +463,7 @@ def match_workbook_to_tranche(filename, sheet_names, pdg_rows, tranches,
     raw = read_codification(pdg_rows)
     if raw:
         exact, loose = build_tranche_index(tranches, site_norms)
-        code = clean_codification(raw, site_norms)
+        code = canonical_code(clean_codification(raw, site_norms))
 
         tranche = exact.get(code)
         method = "page_de_garde"
@@ -449,9 +472,9 @@ def match_workbook_to_tranche(filename, sheet_names, pdg_rows, tranches,
         if tranche is None:
             # repli : indice de tranche absent d'un cote ou de l'autre
             head = re.split(r"\s+-\s+", str(raw))[0]
-            loose_code = strip_site_prefix(
+            loose_code = canonical_code(strip_site_prefix(
                 normalize_name(strip_tranche_index(head)), site_norms
-            )
+            ))
             tranche = loose.get(loose_code) or loose.get(code)
             if tranche:
                 method = "page_de_garde_sans_indice"

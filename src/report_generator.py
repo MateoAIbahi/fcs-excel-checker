@@ -52,7 +52,7 @@ def _build_frames(comparison):
         files = ", ".join(entry["fichiers"])
         warnings = " | ".join(entry["avertissements"])
 
-        if entry["statut_tranche"]:
+        if entry["statut_tranche"] and not entry["sections"]:
             summary.append({
                 "Tranche": tranche,
                 "Section": "",
@@ -87,7 +87,7 @@ def _build_frames(comparison):
                 COLUMN_OK: ok,
                 COLUMN_EXCEL_ONLY: counts.get(STATUS_EXCEL_ONLY, 0),
                 COLUMN_FCS_ONLY: counts.get(STATUS_FCS_ONLY, 0),
-                "Statut tranche": "",
+                "Statut tranche": entry["statut_tranche"] or "",
                 "Avertissements": warnings,
             })
 

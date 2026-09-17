@@ -50,6 +50,8 @@ TRANCHE_EMPTY_FILE = "Nomenclature présente mais sans onglet exploitable"
 TRANCHE_TG_MISSING = "Nomenclature TG absente - comparaison poursuivie sans elle"
 TRANCHE_E13_OK = "OK via onglet sous-tranche E13"
 TRANCHE_E13_MISSING = "Nomenclature absente et aucun onglet sous-tranche E13 trouvé"
+TRANCHE_NOT_IN_FCS = ("Tranche absente du FCS - fonctions de la nomenclature "
+                      "listées pour information")
 
 TG_ALIASES = {"TGENE", "TG", "TRANCHEGENERALE"}
 SECTIONS = ["FonctionsNumériséesCCN", "EquipementsTiers"]
@@ -299,10 +301,31 @@ def compare_all(fcs, associations, parsed_by_file):
 
         result[name] = entry
 
+    # Onglets de nomenclature multi-tension sans tranche correspondante au
+    # FCS : on liste leurs fonctions pour rendre l'ecart visible.
+    for filename, match in sorted(associations.items()):
+        name = match.get("tranche_absente")
+        if not name or match.get("tranche"):
+            continue
+        parsed = parsed_by_file[filename]
+        entry = result.setdefault(name, {
+            "fichiers": [], "statut_tranche": TRANCHE_NOT_IN_FCS,
+            "avertissements": [], "sections": {},
+        })
+        entry["fichiers"].append(filename)
+        if match.get("warning"):
+            entry["avertissements"].append(match["warning"])
+        sheets = parsed.get("sheets") or {}
+        sections = ["FonctionsNumériséesCCN"]
+        if sheets.get("bt") or sheets.get("tac"):
+            sections.append("EquipementsTiers")
+        for section in sections:
+            entry["sections"][section] = compare_section(parsed, {}, section)
+
     # Fichiers qu'on n'a pas su rattacher : ils doivent apparaitre au rapport.
     orphans = {
         filename: match for filename, match in associations.items()
-        if not match.get("tranche")
+        if not match.get("tranche") and not match.get("tranche_absente")
     }
 
     return {"tranches": result, "fichiers_non_associes": orphans}

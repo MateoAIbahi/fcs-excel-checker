@@ -114,15 +114,25 @@ def extract_ccn_sheet(df):
 # Onglet CAL (Tranche Generale)
 # --------------------------------------------------------------------------
 
-# Colonne "Choix des fonctions" : Base / Option = O / Choix = C.
-# Une fonction en Option ou en Choix n'est retenue que si la colonne
-# "Selection" en face porte une reponse positive ; une fonction Base l'est
-# sauf refus explicite (voir NEGATIVE_EXCLUDES_BASE).
+# Regle de selection de l'onglet CAL, commune a toutes les revisions du
+# template E9 observees :
+#   indice F / H (P.SIM, BELIET) : colonne E = 'X' sur les Base et Options
+#   indice J (CASSE)             : 'X' sur les seules Options, Base vides
+#   indice K (MATHA)             : colonne D = Base / Oui / non, E = C, Non...
+#   ICE ind 3                    : colonne E en texte libre ('Oui TCT',
+#                                  'non (car que sur poste blindé)')
+# Colonne D (decision) :
+#   - vide ou 'non'           -> non retenue
+#   - Option / O / Choix / C  -> retenue si la colonne E porte une reponse
+#                                positive ('X', 'C', 'Oui ...', 'Téléalarme')
+#   - Base, Oui, autre        -> retenue, sauf refus explicite en colonne E
+# L'ancienne distinction 'mode marqueur / mode decision' ecartait toutes les
+# Base non cochees de l'indice J.
 CHOICE_VALUES = {"O", "OPTION", "C", "CHOIX"}
 
-# Une reponse 'non ...' en colonne Selection ecarte-t-elle aussi une Base ?
-# Cas observe : ALTECH, Base, 'non suite à la FQR 04'. A confirmer par ICE ;
-# passer a False pour revenir a 'Base toujours retenue'.
+# Une reponse 'non ...' en colonne E ecarte-t-elle aussi une Base ?
+# Cas observe : ALTECH (Inc), Base, 'non suite à la FQR 04'. A confirmer par
+# ICE ; passer a False pour revenir a 'Base toujours retenue'.
 NEGATIVE_EXCLUDES_BASE = True
 
 # Lignes de l'onglet CAL a ignorer (demande ICE) : ce sont les systemes
@@ -137,9 +147,9 @@ CAL_WHOLE_SHEET_CODES = {"IFTG"}
 
 
 def is_retained_choice(decision, selection):
-    """Applique la regle de la colonne de choix de l'onglet CAL."""
+    """Applique la regle de selection de l'onglet CAL (voir ci-dessus)."""
     token = normalize(decision)
-    if not token or is_excluded_option(decision):
+    if not token or is_excluded_option(decision) or is_negative_answer(decision):
         return False
     refused = is_excluded_option(selection) or is_negative_answer(selection)
     if token in CHOICE_VALUES:
@@ -171,39 +181,13 @@ def _cal_function_rows(df):
             yield code, label, row
 
 
-def detect_cal_mode(df, mark_col=4):
+def extract_cal_sheet(df, decision_col=3, selection_col=4):
     """
-    Deux revisions du template E9 coexistent :
-      - indice H : colonne E = 'Options retenues par DI', marquee 'X'
-      - indice K : colonne E = 'Selection', valeurs 'C', 'Telealarme',
-                   'non (...)' -> c'est la colonne D qui decide
-    On tranche sur la donnee, pas sur le libelle d'en-tete, qui varie.
-
-    Seules les lignes de fonction (zone CAL, code en colonne A) comptent :
-    les sous-lignes du bloc migration IF-TG portent un 'X' en colonne E
-    meme en indice K, et suffisaient a basculer tout l'onglet en mode
-    'marqueur' (les Base non marquees etaient alors ignorees).
-    """
-    marks, others = 0, 0
-    for _, _, row in _cal_function_rows(df):
-        value = clean_code(row.iloc[mark_col]) if mark_col < len(row) else None
-        if not value:
-            continue
-        if normalize(value) == "X":
-            marks += 1
-        else:
-            others += 1
-    return "marqueur" if marks > others else "decision"
-
-
-def extract_cal_sheet(df, decision_col=3, mark_col=4):
-    """
-    Retourne (functions, labels, mode, all_codes).
+    Retourne (functions, labels, all_codes).
     all_codes : tous les codes de la colonne A, sur tout l'onglet, pour les
                 recherches de CAL_WHOLE_SHEET_CODES.
     """
     functions, labels = set(), []
-    mode = detect_cal_mode(df, mark_col)
 
     all_codes = set()
     for _, row in df.iterrows():
@@ -214,22 +198,14 @@ def extract_cal_sheet(df, decision_col=3, mark_col=4):
     for code, label, row in _cal_function_rows(df):
         if normalize(code) in CAL_IGNORED_CODES:
             continue
-
         decision = clean_code(row.iloc[decision_col]) if decision_col < len(row) else None
-        mark = clean_code(row.iloc[mark_col]) if mark_col < len(row) else None
-
-        if mode == "marqueur":
-            retained = (bool(mark) and not is_excluded_option(mark)
-                        and not is_negative_answer(mark))
-        else:
-            retained = is_retained_choice(decision, mark)
-
-        if retained:
+        selection = clean_code(row.iloc[selection_col]) if selection_col < len(row) else None
+        if is_retained_choice(decision, selection):
             functions.add(code)
             if label:
                 labels.append((label, code))
 
-    return functions, labels, mode, all_codes
+    return functions, labels, all_codes
 
 
 # --------------------------------------------------------------------------
@@ -377,22 +353,28 @@ def parse_sheet_frames(frames):
         "sheets": {k: list(v) for k, v in buckets.items()},
         "has_e13": bool(buckets["e13"]),
         "cal_all_codes": set(),
+        "ccn_by_sheet": {},
         "notes": [],
     }
 
     if result["is_tg"]:
         for sheet_name in buckets["cal"]:
-            functions, labels, mode, all_codes = extract_cal_sheet(frames[sheet_name])
+            functions, labels, all_codes = extract_cal_sheet(frames[sheet_name])
             result["FonctionsNumériséesCCN"].update(functions)
             result["cal_all_codes"].update(all_codes)
             result["labels"].extend(labels)
-            result["notes"].append("Onglet %s lu en mode '%s'." % (sheet_name, mode))
         if not buckets["cal"]:
             result["notes"].append("Fichier TG sans onglet CAL.")
         return result
 
     for sheet_name in buckets["ccn"]:
         functions, labels, skipped = extract_ccn_sheet(frames[sheet_name])
+        # Conserve par onglet : les nomenclatures AUT.POS multi-tension
+        # rattachent chaque onglet CCN a une tranche differente.
+        result["ccn_by_sheet"][sheet_name] = {
+            "functions": set(functions), "labels": list(labels),
+            "skipped": set(skipped),
+        }
         result["FonctionsNumériséesCCN"].update(functions)
         result["labels"].extend(labels)
         result["skipped_non"].update(skipped)

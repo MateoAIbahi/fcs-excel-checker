@@ -3,6 +3,12 @@ from lxml import etree
 SECTIONS = ["FonctionsNumériséesCCN", "EquipementsTiers"]
 
 
+def _voltage_of(tranche):
+    """Libelle du NiveauTension parent : '225kV', '0kV'... ou ''."""
+    levels = tranche.xpath("ancestor::*[local-name()='NiveauTension'][1]")
+    return (levels[0].get("LibelléNiveauTension") or "") if levels else ""
+
+
 def parse_fcs(file):
     """
     Retourne :
@@ -51,6 +57,7 @@ def parse_fcs(file):
             "LibelléLongTranche": tranche.get("LibelléLongTranche") or "",
             "LibelléTT": tranche.get("LibelléTT") or "",
             "CodeSchémathèqueTT": tranche.get("CodeSchémathèqueTT") or "",
+            "NiveauTension": _voltage_of(tranche),
         }
 
         for section in SECTIONS:

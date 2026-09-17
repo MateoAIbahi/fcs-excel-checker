@@ -8,10 +8,8 @@ st.set_page_config(
     layout="wide",
 )
 
-from src.fcs_parser import parse_fcs
-from src.nomenclature import load_nomenclature
+from src.pipeline import run_analysis
 from src.comparator import (
-    compare_all,
     is_ok_status,
     STATUS_EXCEL_ONLY,
     STATUS_FCS_ONLY,
@@ -19,8 +17,6 @@ from src.comparator import (
     COLUMN_EXCEL_ONLY,
     COLUMN_FCS_ONLY,
 )
-from src.report_generator import generate_excel_report
-from src.tranche_matcher import match_workbook_to_tranche, resolve_collisions
 
 st.markdown(
     """
@@ -71,30 +67,9 @@ st.divider()
 
 
 def analyse(fcs_file, excel_files):
-    fcs = parse_fcs(fcs_file)
-    tranche_names = list(fcs["tranches"])
-    site = (fcs["site"]["code"], fcs["site"]["nom"])
-    volts = fcs.get("niveaux_tension", {})
-
-    associations = {}
-    parsed_by_file = {}
-    failures = {}
-
-    for uploaded in excel_files:
-        name = uploaded.name
-        try:
-            sheet_names, pdg_rows, parsed = load_nomenclature(uploaded, name)
-            associations[name] = match_workbook_to_tranche(
-                name, sheet_names, pdg_rows, tranche_names, site, volts
-            )
-            parsed_by_file[name] = parsed
-        except Exception as error:              # noqa: BLE001
-            failures[name] = "%s : %s" % (type(error).__name__, error)
-
-    associations = resolve_collisions(associations, tranche_names)
-    comparison = compare_all(fcs, associations, parsed_by_file)
-    report = generate_excel_report(comparison, associations)
-    return fcs, associations, comparison, report, failures
+    return run_analysis(
+        fcs_file, [(uploaded.name, uploaded) for uploaded in excel_files]
+    )
 
 
 if st.button("Lancer la comparaison"):
@@ -127,6 +102,9 @@ if st.button("Lancer la comparaison"):
             "page_de_garde": "✅",
             "page_de_garde_sans_indice": "✅",
             "tranche_generale": "🏛️",
+            "nom_cellule_infoposte": "✅",
+            "desambiguisation_transformateur": "✅",
+            "multi_tension": "🔀",
             "collision": "⚠️",
             "page_de_garde_sans_correspondance": "❌",
             "echec": "❌",
@@ -135,7 +113,7 @@ if st.button("Lancer la comparaison"):
             {
                 "": icons.get(match["method"], "❔"),
                 "Fichier": filename,
-                "Tranche": match["tranche"] or "—",
+                "Tranche": match["tranche"] or match.get("tranche_absente") or "—",
                 "Méthode": match["method"],
                 "Page de garde": match.get("raw") or "",
             }
@@ -158,7 +136,7 @@ if st.button("Lancer la comparaison"):
                 st.write("- **%s** : %s" % (filename, message))
 
         # ------------------------------------------------------------------
-        st.markdown("### Tranches du FCS sans comparaison")
+        st.markdown("### Tranches à signaler")
 
         pending = {
             name: entry["statut_tranche"]
@@ -169,7 +147,7 @@ if st.button("Lancer la comparaison"):
             for name, statut in sorted(pending.items()):
                 st.write("- `%s` → %s" % (name, statut))
         else:
-            st.write("Toutes les tranches du FCS ont été comparées.")
+            st.write("Aucune tranche à signaler.")
 
         # ------------------------------------------------------------------
         st.markdown("### Synthèse")
