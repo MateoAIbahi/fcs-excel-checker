@@ -130,9 +130,8 @@ def extract_ccn_sheet(df):
 # Base non cochees de l'indice J.
 CHOICE_VALUES = {"O", "OPTION", "C", "CHOIX"}
 
-# Une reponse 'non ...' en colonne E ecarte-t-elle aussi une Base ?
-# Cas observe : ALTECH (Inc), Base, 'non suite à la FQR 04'. A confirmer par
-# ICE ; passer a False pour revenir a 'Base toujours retenue'.
+# Une reponse 'non ...' en colonne E ecarte aussi une Base : confirme par
+# ICE en septembre 2026 (cas ALTECH (Inc), Base, 'non suite à la FQR 04').
 NEGATIVE_EXCLUDES_BASE = True
 
 # Lignes de l'onglet CAL a ignorer (demande ICE) : ce sont les systemes
@@ -140,9 +139,11 @@ NEGATIVE_EXCLUDES_BASE = True
 # d'autres codes commencant par 'TG'.
 CAL_IGNORED_CODES = {"TG", "TGSI"}
 
-# Codes a chercher dans TOUT l'onglet CAL, hors zone des fonctions et sans
-# regle de selection : ils portent un bloc (en-tete + sous-lignes) plutot
-# qu'une ligne Base/Option.
+# Codes portant un BLOC dans l'onglet CAL (une ligne d'en-tete, puis des
+# sous-lignes sans code) plutot qu'une ligne Base/Option, et cherches dans
+# tout l'onglet, hors zone des fonctions. Le bloc compte comme retenu si au
+# moins une de ses sous-lignes l'est, au sens de is_retained_choice
+# (demande ICE : "une sous-ligne doit etre cochee").
 CAL_WHOLE_SHEET_CODES = {"IFTG"}
 
 
@@ -181,19 +182,35 @@ def _cal_function_rows(df):
             yield code, label, row
 
 
+def _cal_blocks(df, decision_col=3, selection_col=4):
+    """
+    Codes de CAL_WHOLE_SHEET_CODES dont le bloc compte au moins une
+    sous-ligne retenue, cherches sur tout l'onglet.
+    """
+    retained = set()
+    rows = list(df.iterrows())
+    for position, (_, row) in enumerate(rows):
+        code = clean_code(row.iloc[0]) if len(row) > 0 else None
+        if not code or normalize(code) not in CAL_WHOLE_SHEET_CODES:
+            continue
+        for _, sub in rows[position + 1:]:
+            if len(sub) > 0 and clean_code(sub.iloc[0]):
+                break                      # ligne de code suivante : fin du bloc
+            decision = clean_code(sub.iloc[decision_col]) if decision_col < len(sub) else None
+            selection = clean_code(sub.iloc[selection_col]) if selection_col < len(sub) else None
+            if is_retained_choice(decision, selection):
+                retained.add(code)
+                break
+    return retained
+
+
 def extract_cal_sheet(df, decision_col=3, selection_col=4):
     """
-    Retourne (functions, labels, all_codes).
-    all_codes : tous les codes de la colonne A, sur tout l'onglet, pour les
-                recherches de CAL_WHOLE_SHEET_CODES.
+    Retourne (functions, labels, block_codes).
+    block_codes : codes a bloc retenus (voir CAL_WHOLE_SHEET_CODES).
     """
     functions, labels = set(), []
-
-    all_codes = set()
-    for _, row in df.iterrows():
-        code = clean_code(row.iloc[0]) if len(row) > 0 else None
-        if code:
-            all_codes.add(code)
+    block_codes = _cal_blocks(df, decision_col, selection_col)
 
     for code, label, row in _cal_function_rows(df):
         if normalize(code) in CAL_IGNORED_CODES:
@@ -205,7 +222,7 @@ def extract_cal_sheet(df, decision_col=3, selection_col=4):
             if label:
                 labels.append((label, code))
 
-    return functions, labels, all_codes
+    return functions, labels, block_codes
 
 
 # --------------------------------------------------------------------------
@@ -352,16 +369,16 @@ def parse_sheet_frames(frames):
         "skipped_non": set(),
         "sheets": {k: list(v) for k, v in buckets.items()},
         "has_e13": bool(buckets["e13"]),
-        "cal_all_codes": set(),
+        "cal_block_codes": set(),
         "ccn_by_sheet": {},
         "notes": [],
     }
 
     if result["is_tg"]:
         for sheet_name in buckets["cal"]:
-            functions, labels, all_codes = extract_cal_sheet(frames[sheet_name])
+            functions, labels, block_codes = extract_cal_sheet(frames[sheet_name])
             result["FonctionsNumériséesCCN"].update(functions)
-            result["cal_all_codes"].update(all_codes)
+            result["cal_block_codes"].update(block_codes)
             result["labels"].extend(labels)
         if not buckets["cal"]:
             result["notes"].append("Fichier TG sans onglet CAL.")
@@ -461,7 +478,7 @@ def resolve_function(parsed, section, code, long_label=None):
         return True, "code", direct[target]
 
     if section == "FonctionsNumériséesCCN" and target in CAL_WHOLE_SHEET_CODES:
-        for raw in parsed.get("cal_all_codes", set()):
+        for raw in parsed.get("cal_block_codes", set()):
             if normalize(raw) == target:
                 return True, "onglet_cal_complet", raw
 

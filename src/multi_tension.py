@@ -13,8 +13,8 @@ a pas ('AUT.POST' a MAUGE).
 
 Le fichier est remplace, apres rattachement, par une association par niveau
 de tension, nommee '<fichier> [<onglet>]'. Les onglets Basse Tension / TAC,
-communs au classeur, suivent la tranche designee par la page de garde, a
-defaut le niveau de tension le plus bas.
+communs au classeur, sont compares a TOUS les niveaux de tension presents
+(demande ICE).
 
 Si le FCS n'a pas de tranche AUT.POS pour un niveau, l'association porte
 'tranche_absente' : les fonctions de l'onglet sont alors listees comme
@@ -94,8 +94,11 @@ def expected_tranche_name(fcs, radical, voltage):
     return "%s%s" % (prefix, DISPLAY_RADICAL.get(radical, radical))
 
 
-def _subset(parsed, sheets, with_equipment):
-    """Vue de `parsed` limitee a certains onglets CCN."""
+def _subset(parsed, sheets):
+    """
+    Vue de `parsed` limitee a certains onglets CCN. Les onglets Basse
+    Tension et TAC sont conserves : ils valent pour tous les niveaux.
+    """
     sub = dict(parsed)
     ccn = parsed.get("ccn_by_sheet", {})
     sub["ccn_by_sheet"] = {name: ccn[name] for name in sheets}
@@ -106,15 +109,6 @@ def _subset(parsed, sheets, with_equipment):
     sub["sheets"] = dict(parsed.get("sheets") or {})
     sub["sheets"]["ccn"] = list(sheets)
     sub["notes"] = list(parsed.get("notes", []))
-    if not with_equipment:
-        sub["EquipementsTiers"] = set()
-        sub["mnemonics"] = set()
-        sub["tac_codes"] = set()
-        sub["labels"] = []
-        sub["sheets"]["bt"] = []
-        sub["sheets"]["tac"] = []
-        sub["notes"] = [n for n in sub["notes"]
-                        if "Basse Tension" not in n and "TAC" not in n]
     return sub
 
 
@@ -135,12 +129,6 @@ def expand_multi_voltage(associations, parsed_by_file, fcs):
         if not by_voltage:
             continue
 
-        home = None
-        if match.get("tranche"):
-            info = fcs["tranches"].get(match["tranche"], {})
-            home = voltage_value(info.get("NiveauTension"))
-        if home not in by_voltage:
-            home = min(by_voltage)
         has_equipment = bool((parsed.get("sheets") or {}).get("bt")
                              or (parsed.get("sheets") or {}).get("tac"))
 
@@ -150,7 +138,6 @@ def expand_multi_voltage(associations, parsed_by_file, fcs):
         for voltage in sorted(by_voltage, reverse=True):
             sheets = by_voltage[voltage]
             key = "%s [%s]" % (filename, ", ".join(sheets))
-            with_equipment = voltage == home
             tranche = find_tranche(fcs, radical, voltage)
 
             entry = dict(match)
@@ -173,12 +160,12 @@ def expand_multi_voltage(associations, parsed_by_file, fcs):
                            "aucune tranche %s de niveau %d kV pour l'onglet %s."
                            % (DISPLAY_RADICAL.get(radical, radical), voltage,
                               ", ".join(sheets)))
-            if with_equipment and has_equipment:
+            if has_equipment:
                 warning += (" Les onglets Basse Tension / TAC du classeur sont "
-                            "comparés à ce niveau de tension.")
+                            "comparés à chaque niveau de tension.")
             entry["warning"] = warning
 
             associations[key] = entry
-            parsed_by_file[key] = _subset(parsed, sheets, with_equipment)
+            parsed_by_file[key] = _subset(parsed, sheets)
 
     return associations, parsed_by_file

@@ -343,12 +343,12 @@ def _merge_parsed(parsed_list):
         "notes": [],
         "has_e13": False,
         "tac_codes": set(),
-        "cal_all_codes": set(),
+        "cal_block_codes": set(),
         "sheets": {"ccn": [], "bt": [], "tac": [], "cal": [], "e13": []},
     }
     for parsed in parsed_list:
         for key in ("FonctionsNumériséesCCN", "EquipementsTiers",
-                    "mnemonics", "tac_codes", "cal_all_codes"):
+                    "mnemonics", "tac_codes", "cal_block_codes"):
             merged[key].update(parsed.get(key, set()))
         merged["labels"].extend(parsed.get("labels", []))
         merged["notes"].extend(parsed.get("notes", []))

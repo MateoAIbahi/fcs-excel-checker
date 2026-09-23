@@ -87,10 +87,10 @@ def test_un_onglet_par_tension():
     assert absent["statut_tranche"] == TRANCHE_NOT_IN_FCS
     assert statuses("6AUT.POS (absente du FCS)") == {
         "ASLD": STATUS_EXCEL_ONLY, "AUTOMATE": STATUS_EXCEL_ONLY}
-    # Les onglets TAC suivent la tranche de la page de garde (0 kV)
+    # Les onglets Basse Tension / TAC valent pour tous les niveaux (ICE)
     tac_notes = {name for name, entry in tranches.items()
                  if any("TAC" in note for note in entry["avertissements"])}
-    assert tac_notes == {"AUT.POST"}
+    assert tac_notes == {"AUT.POST", "4AUT.POS", "6AUT.POS (absente du FCS)"}
 
 
 def test_classeur_mono_tension_inchange():

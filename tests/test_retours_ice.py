@@ -100,9 +100,9 @@ def cal_frame_j():
 
 
 def test_indice_j_base_non_cochees_retenues():
-    functions, _, all_codes = extract_cal_sheet(cal_frame_j())
+    functions, _, blocks = extract_cal_sheet(cal_frame_j())
     assert functions == {"REPORT", "APPELPORTETEL", "MODEXP", "DANGER"}
-    assert "IF-TG" in all_codes
+    assert blocks == {"IF-TG"}          # sous-ligne 'O' cochée 'X'
 
 
 def test_indice_h_marqueur():
@@ -111,9 +111,23 @@ def test_indice_h_marqueur():
 
 
 def test_selection_cal_indice_k():
-    functions, _, all_codes = extract_cal_sheet(cal_frame_k())
+    functions, _, blocks = extract_cal_sheet(cal_frame_k())
     assert functions == {"SYNO", "SIRSUTCTCO2", "TELEAL"}
-    assert "IF-TG" in all_codes
+    assert blocks == {"IF-TG"}
+
+
+def test_bloc_if_tg_sans_sous_ligne_retenue():
+    """Bloc present mais aucune sous-ligne cochée : IF-TG n'est pas retenu."""
+    df = cal_frame_k()
+    df.iat[13, 3], df.iat[13, 4] = "O", None     # sous-ligne 48V décochée
+    df.iat[14, 3], df.iat[14, 4] = "O", "Non"    # sous-ligne 127V refusée
+    assert extract_cal_sheet(df)[2] == set()
+
+    parsed = parse_sheet_frames({"PdG ": pd.DataFrame(), "CAL": df})
+    rows = compare_section(parsed, {"IF-TG": "Migration"},
+                           "FonctionsNumériséesCCN")
+    statuses = {r["Fonction FCS"]: r["Statut"] for r in rows if r["Fonction FCS"]}
+    assert statuses == {"IF-TG": STATUS_FCS_ONLY}
 
 
 def test_base_toujours_retenue_sans_refus():
