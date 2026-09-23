@@ -243,12 +243,13 @@ def extract_equipment_sheet(df, sheet_name):
       codes     : codes directement exploitables comme LibelleCourtObjetFonction
       mnemonics : tous les mnemoniques colonne A (sert au repli 'DIFC' -> 'DIFC11')
       labels    : titres de section + designations, pour le repli libelle long
+      designations : (designation, mnemonique, onglet) des lignes retenues
     """
-    codes, mnemonics, labels = set(), set(), []
+    codes, mnemonics, labels, designations = set(), set(), [], []
 
     header_row, columns = find_header_row(df, ["Mnemonique"])
     if header_row is None:
-        return codes, mnemonics, labels
+        return codes, mnemonics, labels, designations
 
     mnemonic_col = columns["MNEMONIQUE"]
     designation_col = columns.get("DESIGNATION", mnemonic_col + 1)
@@ -256,6 +257,10 @@ def extract_equipment_sheet(df, sheet_name):
     free_text_cols = [
         columns[key] for key in ("FCTTAC", "COMMENTAIRESDI") if key in columns
     ]
+    # Colonnes de commentaire libre : versees aux libelles pour le repli par
+    # libelle long, mais JAMAIS a l'extraction de codes ('2ème seuil : MAX I
+    # Harmonique' y produirait un mnemonique 'MAX').
+    comment_cols = [columns[key] for key in ("INFORMATIONSCLI",) if key in columns]
 
     for _, row in df.iloc[header_row + 1:].iterrows():
         mnemonic = clean_code(row.iloc[mnemonic_col]) if mnemonic_col < len(row) else None
@@ -279,10 +284,19 @@ def extract_equipment_sheet(df, sheet_name):
 
         if designation:
             labels.append((designation, f"{sheet_name} (designation)"))
+            if not is_excluded_option(option):
+                # Conserve avec son mnemonique : sert aux recherches par
+                # designation ('PX-Bi-Tiers' en face de 'PXmulti-PX').
+                designations.append((designation, mnemonic, sheet_name))
             match = SUBFUNCTION_RE.match(designation)
             if match and not is_excluded_option(option):
                 # 'PXmulti-Fonction PX' -> 'PXmulti-PX'
                 codes.add("%s-%s" % (match.group(1), match.group(2)))
+
+        for index in comment_cols:
+            comment = clean_code(row.iloc[index]) if index < len(row) else None
+            if comment:
+                labels.append((comment, f"{sheet_name} (commentaire)"))
 
         # Colonnes de texte libre : 'Fct TAC' et 'Commentaires DI'
         for index in free_text_cols:
@@ -300,7 +314,7 @@ def extract_equipment_sheet(df, sheet_name):
                     if 2 <= len(found) <= 12:
                         codes.add(found)
 
-    return codes, mnemonics, labels
+    return codes, mnemonics, labels, designations
 
 
 # --------------------------------------------------------------------------
@@ -371,6 +385,7 @@ def parse_sheet_frames(frames):
         "has_e13": bool(buckets["e13"]),
         "cal_block_codes": set(),
         "ccn_by_sheet": {},
+        "designations": [],
         "notes": [],
     }
 
@@ -397,12 +412,13 @@ def parse_sheet_frames(frames):
         result["skipped_non"].update(skipped)
 
     for sheet_name in buckets["bt"] + buckets["tac"]:
-        codes, mnemonics, labels = extract_equipment_sheet(
+        codes, mnemonics, labels, designations = extract_equipment_sheet(
             frames[sheet_name], sheet_name
         )
         result["EquipementsTiers"].update(codes)
         result["mnemonics"].update(mnemonics)
         result["labels"].extend(labels)
+        result["designations"].extend(designations)
         if sheet_name in buckets["tac"]:
             # Sert au rapport : on masque les lignes 'TAC-Nx' des lors qu'une
             # fonction a bien ete identifiee via cet onglet.
@@ -422,13 +438,28 @@ def parse_sheet_frames(frames):
 
 NUMBERED_INSTANCE_RE = "^%s\\d+$"
 
-# Equivalences de codes FCS -> nomenclature, conditionnees au libelle long.
-# (section, code FCS, libelle long FCS ou None, code nomenclature)
-# Le libelle est compare apres normalisation (casse, accents, ponctuation).
+# Equivalences de codes FCS -> nomenclature.
+# (sections, code FCS, libelle long FCS ou None, jeton cherche cote
+#  nomenclature). Le jeton est cherche dans les codes, les mnemoniques et les
+#  designations : la ligne 'PDBN UT 1/3 RACK 1-5A 48Vcc' vaut PDBN (demande
+#  ICE : associer UT a l'element CONTENANT PDBN).
+# Le libelle long, quand il est renseigne, doit correspondre exactement
+# (apres normalisation) ; a None, l'equivalence vaut pour tout libelle.
 FUNCTION_EQUIVALENCES = [
-    ("EquipementsTiers", "UT",
-     "Unité de travée différentielle de barres numérique", "PDBN"),
+    (("EquipementsTiers", "FonctionsNumériséesCCN"), "UT", None, "PDBN"),
 ]
+
+
+def label_tokens(text):
+    """Jetons normalises d'un libelle : 'PDBN UT 1/3 RACK' -> {PDBN, UT...}."""
+    return {normalize(part) for part in re.split(r"[^0-9A-Za-zÀ-ÿ]+", str(text or ""))
+            if normalize(part)}
+
+
+def _split_index(code_norm):
+    """'PBF1' -> 'PBF', 'PBCS31S' -> 'PBCS', 'PDL' -> None."""
+    match = re.match(r"^([A-Z]{2,})(\d+)([A-Z]?)$", code_norm)
+    return match.group(1) if match else None
 
 
 def _instance_order(raw):
@@ -453,17 +484,63 @@ def _find_code(parsed, section, target):
     return None
 
 
+def _find_token(parsed, section, token):
+    """
+    Ligne de nomenclature contenant `token` : code exact, mnemonique, ou
+    designation ou le jeton apparait comme mot entier.
+    """
+    found = _find_code(parsed, section, token)
+    if found:
+        return found
+    for raw in sorted(parsed.get("mnemonics", set()), key=_instance_order):
+        if token in label_tokens(raw):
+            return raw
+    for designation, mnemonic, sheet in parsed.get("designations", []):
+        if token in label_tokens(designation):
+            return "%s (%s)" % (mnemonic or sheet, designation)
+    return None
+
+
 def resolve_equivalence(parsed, section, code, long_label):
-    """Retourne le code nomenclature equivalent trouve, ou None."""
-    for eq_section, fcs_code, fcs_label, nom_code in FUNCTION_EQUIVALENCES:
-        if eq_section != section or normalize(fcs_code) != normalize(code):
+    """Retourne la ligne de nomenclature equivalente trouvee, ou None."""
+    for sections, fcs_code, fcs_label, token in FUNCTION_EQUIVALENCES:
+        if isinstance(sections, str):
+            sections = (sections,)
+        if section not in sections or normalize(fcs_code) != normalize(code):
             continue
         if fcs_label is not None and normalize(fcs_label) != normalize(long_label):
             continue
-        found = _find_code(parsed, section, normalize(nom_code))
+        found = _find_token(parsed, section, normalize(token))
         if found:
             return found
     return None
+
+
+def resolve_designation(parsed, code):
+    """
+    Cherche le code du FCS dans la colonne Designation des onglets
+    equipements tiers ('PX-Bi-Tiers' en face du mnemonique 'PXmulti-PX').
+    Le code doit y figurer en entier, seul ou comme mot de la designation.
+    """
+    target = normalize(code)
+    if len(target) < 2:
+        return None
+    for designation, mnemonic, sheet in parsed.get("designations", []):
+        if normalize(designation) == target or target in label_tokens(designation):
+            return "%s ~ %s" % (mnemonic or sheet, designation)
+    return None
+
+
+def resolve_radical(parsed, code):
+    """
+    Code du FCS indice, nomenclature sans indice : 'PBF1' et 'PBF2' en face
+    de 'PBF', 'PBCS 31' en face de 'PBCS'. Symetrique de
+    'mnemonique_indice', qui traite le cas inverse.
+    """
+    radical = _split_index(normalize(code))
+    if not radical:
+        return None
+    return _find_code(parsed, "EquipementsTiers", radical)
 
 
 def resolve_function(parsed, section, code, long_label=None):
@@ -494,6 +571,14 @@ def resolve_function(parsed, section, code, long_label=None):
         for raw in sorted(parsed.get("mnemonics", set()), key=_instance_order):
             if pattern.match(normalize(raw)):
                 return True, "mnemonique_indice", raw
+
+        radical = resolve_radical(parsed, code)
+        if radical:
+            return True, "mnemonique_radical", radical
+
+        designation = resolve_designation(parsed, code)
+        if designation:
+            return True, "designation", designation
 
         if long_label:
             match = best_label_match(long_label, parsed.get("labels", []))

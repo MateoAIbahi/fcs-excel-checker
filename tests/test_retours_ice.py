@@ -197,12 +197,24 @@ def test_ut_pdbn_equivalence():
     assert [r["Statut"] for r in rows] == [STATUS_OK_EQUIVALENCE]
 
 
-def test_ut_autre_libelle_non_rapproche():
+def test_ut_pdbn_sans_condition_de_libelle():
+    """ICE : UT s'associe à l'élément contenant PDBN, quel que soit le libellé."""
     parsed = parse_sheet_frames({"2-Basse Tension": bt_frame("PDBN")})
-    found, method, _ = resolve_function(
-        parsed, "EquipementsTiers", "UT", "Unité de traitement",
-    )
-    assert method != "equivalence"
+    assert resolve_function(parsed, "EquipementsTiers", "UT",
+                            "Unité de traitement")[1] == "equivalence"
+
+
+def test_ut_pdbn_dans_la_designation():
+    """'PDBN UT 1/3 RACK 1-5A 48Vcc' : le jeton PDBN est dans la désignation."""
+    frame = pd.DataFrame([
+        ["Mnémonique", "Désignation", "Type option"],
+        ["EQ1", "PDBN UT 1/3 RACK 1-5A 48Vcc", "Base"],
+    ])
+    parsed = parse_sheet_frames({"2-Basse Tension": frame})
+    found, method, evidence = resolve_function(
+        parsed, "EquipementsTiers", "UT", "Unité de travée")
+    assert (found, method) == (True, "equivalence")
+    assert "PDBN UT" in evidence
 
 
 def test_ut_pdbn_indice():
@@ -248,3 +260,46 @@ def test_mnemonique_indice_deterministe():
               "mnemonics": {"DDS10", "DDS2", "DDS1"}, "labels": []}
     for _ in range(20):
         assert resolve_function(parsed, "EquipementsTiers", "DDS")[2] == "DDS1"
+
+
+# --------------------------------------------------------------------------
+# Recherches ajoutées en septembre 2026 (équipements tiers)
+# --------------------------------------------------------------------------
+
+def eq_frame(*rows):
+    head = [["Mnémonique", "Désignation", "Type option"]]
+    return pd.DataFrame(head + [list(r) for r in rows])
+
+
+def test_recherche_par_designation():
+    """'PX-Bi-Tiers' au FCS, désignation de la ligne 'PXmulti-PX' (MAUGE)."""
+    parsed = parse_sheet_frames({"3-TAC": eq_frame(
+        ("PXmulti-PW", "PXmulti-Fonction PW", "Option"),
+        ("PXmulti-PX", "PX-Bi-Tiers", "Base"),
+    )})
+    found, method, evidence = resolve_function(
+        parsed, "EquipementsTiers", "PX-Bi-Tiers", "Protection bi-tiers")
+    assert (found, method) == (True, "designation")
+    assert "PXmulti-PX" in evidence
+
+
+def test_mnemonique_sans_indice():
+    """'PBF1' et 'PBF2' au FCS, 'PBF' dans la nomenclature (4COND.3)."""
+    parsed = parse_sheet_frames({"2-Basse Tension": eq_frame(
+        ("PBF", "Protection de batterie filtrée", "Base"),
+        ("PBCS", "Protection batteries condensateurs simplifiée", "Base"),
+    )})
+    for code in ("PBF1", "PBF2"):
+        assert resolve_function(parsed, "EquipementsTiers", code)[:2] == (
+            True, "mnemonique_radical")
+    found, method, evidence = resolve_function(
+        parsed, "EquipementsTiers", "PBCS 31S")
+    assert (found, method, evidence) == (True, "mnemonique_radical", "PBCS")
+
+
+def test_code_court_non_rapproche_par_designation():
+    """Un code d'une seule lettre ne déclenche pas la recherche par désignation."""
+    parsed = parse_sheet_frames({"2-Basse Tension": eq_frame(
+        ("EQ1", "Protection P de secours", "Base"),
+    )})
+    assert resolve_function(parsed, "EquipementsTiers", "P")[0] is False

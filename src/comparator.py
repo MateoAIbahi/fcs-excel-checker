@@ -13,12 +13,15 @@ STATUS_OK_INSTANCE = "Comparaison conforme (mnémonique indicé)"
 STATUS_OK_LABEL = "Comparaison conforme (libellé long)"
 STATUS_OK_EQUIVALENCE = "Comparaison conforme (équivalence de code)"
 STATUS_OK_CAL = "Comparaison conforme (recherche dans tout l'onglet CAL)"
+STATUS_OK_RADICAL = "Comparaison conforme (mnémonique sans indice)"
+STATUS_OK_DESIGNATION = "Comparaison conforme (désignation)"
 STATUS_EXCEL_ONLY = "Fonction présente uniquement dans le fichier de nomenclature"
 STATUS_FCS_ONLY = "Fonction présente uniquement dans le fichier FCS"
 
 OK_STATUSES = {
     STATUS_OK, STATUS_OK_INSTANCE, STATUS_OK_LABEL,
     STATUS_OK_EQUIVALENCE, STATUS_OK_CAL,
+    STATUS_OK_RADICAL, STATUS_OK_DESIGNATION,
 }
 
 # Titres des colonnes de comptage de l'onglet Resume
@@ -32,12 +35,14 @@ METHOD_STATUS = {
     "libelle_long": STATUS_OK_LABEL,
     "equivalence": STATUS_OK_EQUIVALENCE,
     "onglet_cal_complet": STATUS_OK_CAL,
+    "mnemonique_radical": STATUS_OK_RADICAL,
+    "designation": STATUS_OK_DESIGNATION,
 }
 
 # Methodes dont la preuve est un code de la nomenclature : ce code ne doit
 # plus apparaitre en 'present uniquement dans la nomenclature'.
 CONSUMING_METHODS = {"code", "mnemonique_indice", "equivalence",
-                     "onglet_cal_complet"}
+                     "onglet_cal_complet", "mnemonique_radical"}
 
 
 def is_ok_status(status):
@@ -340,6 +345,7 @@ def _merge_parsed(parsed_list):
         "EquipementsTiers": set(),
         "mnemonics": set(),
         "labels": [],
+        "designations": [],
         "notes": [],
         "has_e13": False,
         "tac_codes": set(),
@@ -351,6 +357,7 @@ def _merge_parsed(parsed_list):
                     "mnemonics", "tac_codes", "cal_block_codes"):
             merged[key].update(parsed.get(key, set()))
         merged["labels"].extend(parsed.get("labels", []))
+        merged["designations"].extend(parsed.get("designations", []))
         merged["notes"].extend(parsed.get("notes", []))
         merged["has_e13"] = merged["has_e13"] or parsed.get("has_e13", False)
         for key, value in (parsed.get("sheets") or {}).items():

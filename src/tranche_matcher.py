@@ -168,6 +168,12 @@ def find_tg_tranche(tranches):
 # cellule InfoPoste, du type "L31RESER - DEP 63kV N0 1 RESERVE".
 
 INFOPOSTE_LABEL = "NOMDECELLULEINFOPOSTE"
+
+# Quelques nomenclatures (G.POR) n'ont pas de "Codification cellule DPC²" :
+# la page de garde porte "Nom de la Cellule", dont la valeur est directement
+# le nom de tranche du FCS ('6SEC..12'). Ce libelle est distinct de
+# "Nom de cellule InfoPoste", d'ou une lecture dediee.
+CELL_NAME_LABEL = "NOMDELACELLULE"
 TYPE_TRANCHE_LABEL = "TYPEDETRANCHE"
 CODE_REFERENCE_LABEL = "CODEREFERENCE"
 
@@ -318,6 +324,34 @@ def match_by_infoposte(raw, tranches, voltage_prefixes):
         if len(exact) == 1:
             return exact[0]
     return None
+
+
+def match_by_cell_name(raw, tranches, site_norms, voltage_prefixes):
+    """
+    Resout un "Nom de la Cellule" : d'abord comme nom de tranche du FCS,
+    sinon comme code cellule InfoPoste. Retourne (tranche, methode) ou
+    (None, None).
+    """
+    if not raw:
+        return None, None
+    exact, loose = build_tranche_index(tranches, site_norms)
+    code = canonical_code(clean_codification(raw, site_norms))
+    tranche = exact.get(code)
+    if tranche:
+        return tranche, "nom_cellule"
+
+    head = re.split(r"\s+-\s+", str(raw))[0]
+    loose_code = canonical_code(strip_site_prefix(
+        normalize_name(strip_tranche_index(head)), site_norms
+    ))
+    tranche = loose.get(loose_code) or loose.get(code)
+    if tranche:
+        return tranche, "nom_cellule_sans_indice"
+
+    tranche = match_by_infoposte(raw, tranches, voltage_prefixes)
+    if tranche:
+        return tranche, "nom_cellule"
+    return None, None
 
 
 def looks_like_tg_page(rows):
@@ -492,6 +526,21 @@ def match_workbook_to_tranche(filename, sheet_names, pdg_rows, tranches,
             }
             result.update(context)
             return result
+        cell_name = read_field(pdg_rows, CELL_NAME_LABEL)
+        tranche, method = match_by_cell_name(
+            cell_name, tranches, site_norms, voltage_prefixes
+        )
+        if tranche:
+            result = {
+                "tranche": tranche,
+                "method": method,
+                "raw": cell_name,
+                "warning": (f"Codification '{raw}' absente du FCS : association "
+                            f"deduite du nom de cellule '{cell_name}'."),
+            }
+            result.update(context)
+            return result
+
         result = {
             "tranche": None,
             "method": "page_de_garde_sans_correspondance",
@@ -516,6 +565,23 @@ def match_workbook_to_tranche(filename, sheet_names, pdg_rows, tranches,
             result.update(context)
             return result
 
+    # Repli 2 : "Nom de la Cellule", qui porte le nom de tranche sur certaines
+    # nomenclatures sans codification DPC2 (G.POR).
+    cell_name = read_field(pdg_rows, CELL_NAME_LABEL)
+    tranche, method = match_by_cell_name(
+        cell_name, tranches, site_norms, voltage_prefixes
+    )
+    if tranche:
+        result = {
+            "tranche": tranche,
+            "method": method,
+            "raw": cell_name,
+            "warning": ("Codification DPC2 absente : association deduite du "
+                        "nom de cellule '%s'." % cell_name),
+        }
+        result.update(context)
+        return result
+
     if looks_like_tg(sheet_names, pdg_rows) or looks_like_tg_page(pdg_rows):
         tranche = find_tg_tranche(tranches)
         if tranche:
@@ -527,9 +593,9 @@ def match_workbook_to_tranche(filename, sheet_names, pdg_rows, tranches,
         result.update(context)
         return result
 
-    result = {"tranche": None, "method": "echec", "raw": infoposte,
-              "warning": ("Ni codification DPC2 ni nom de cellule InfoPoste "
-                          "exploitable sur la page de garde.")}
+    result = {"tranche": None, "method": "echec", "raw": infoposte or cell_name,
+              "warning": ("Ni codification DPC2 ni nom de cellule exploitable "
+                          "sur la page de garde.")}
     result.update(context)
     return result
 
