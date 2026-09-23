@@ -42,7 +42,7 @@ METHOD_STATUS = {
 # Methodes dont la preuve est un code de la nomenclature : ce code ne doit
 # plus apparaitre en 'present uniquement dans la nomenclature'.
 CONSUMING_METHODS = {"code", "mnemonique_indice", "equivalence",
-                     "onglet_cal_complet", "mnemonique_radical"}
+                     "onglet_cal_complet", "mnemonique_radical", "designation"}
 
 
 def is_ok_status(status):
@@ -129,7 +129,10 @@ def compare_section(parsed, fcs_objects, section, ignored_codes=()):
         found, method, evidence = resolve_function(parsed, section, code, label)
         if found:
             if method in CONSUMING_METHODS:
-                consumed.add(normalize(evidence))
+                # 'PXmulti-PX ~ PX-Bi-Tiers' : la ligne appariee est celle du
+                # mnemonique, qui ne doit plus ressortir comme presente dans
+                # la seule nomenclature.
+                consumed.add(normalize(str(evidence).split(" ~ ")[0]))
             rows.append({
                 "Fonction Excel": evidence if method != "libelle_long" else "",
                 "Fonction FCS": code,

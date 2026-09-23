@@ -303,3 +303,14 @@ def test_code_court_non_rapproche_par_designation():
         ("EQ1", "Protection P de secours", "Base"),
     )})
     assert resolve_function(parsed, "EquipementsTiers", "P")[0] is False
+
+
+def test_designation_consomme_la_ligne_appariee():
+    """La ligne appariée par sa désignation ne ressort pas comme 'nomenclature seule'."""
+    parsed = parse_sheet_frames({"2-Basse Tension": eq_frame(
+        ("PXmulti-PW", "PXmulti-Fonction PW", "Option"),
+        ("PXmulti-PX", "PX-Bi-Tiers", "Base"),
+    )})
+    rows = compare_section(
+        parsed, {"PXmulti-PW": "", "PX-Bi-Tiers": ""}, "EquipementsTiers")
+    assert all(r["Statut"] != STATUS_EXCEL_ONLY for r in rows)
