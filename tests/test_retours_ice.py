@@ -314,3 +314,45 @@ def test_designation_consomme_la_ligne_appariee():
     rows = compare_section(
         parsed, {"PXmulti-PW": "", "PX-Bi-Tiers": ""}, "EquipementsTiers")
     assert all(r["Statut"] != STATUS_EXCEL_ONLY for r in rows)
+
+
+# --------------------------------------------------------------------------
+# Options barrées (retour ICE, septembre 2026)
+# --------------------------------------------------------------------------
+
+def test_ligne_barree_non_retenue():
+    functions, _, _ = extract_cal_sheet(cal_frame_j(), struck={3, 7})
+    assert functions == {"REPORT", "MODEXP"}        # APPELPORTETEL et DANGER barrées
+
+
+def test_selection_prioritaire_sur_le_barre():
+    """ICE : si la colonne de sélection porte une mention, elle l'emporte."""
+    frame = cal_frame_j()
+    frame.iat[3, 4] = "X"                           # APPELPORTETEL barrée mais cochée
+    frame.iat[7, 4] = "non (FQR)"                   # DANGER barrée et refusée
+    functions, _, _ = extract_cal_sheet(frame, struck={3, 7})
+    assert "APPELPORTETEL" in functions
+    assert "DANGER" not in functions
+
+
+def test_lecture_des_lignes_barrees_xlsx(tmp_path):
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+    from src.excel_parser import read_struck_rows
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "CAL"
+    sheet.append(["REPORT", "Report des alarmes", None, "Base", None])
+    sheet.append(["CA", "Contrôle d'accès", None, "Option", None])
+    for cell in sheet[2]:
+        cell.font = Font(strike=True)
+    path = tmp_path / "tg.xlsx"
+    workbook.save(path)
+
+    assert read_struck_rows(str(path)) == {"CAL": {1}}
+
+
+def test_mise_en_forme_illisible_sans_erreur():
+    from src.excel_parser import read_struck_rows
+    assert read_struck_rows("/inexistant/nomenclature.pdf") == {}

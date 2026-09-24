@@ -69,11 +69,12 @@ def classify_sheets(sheet_names):
 # Onglet CCN
 # --------------------------------------------------------------------------
 
-def extract_ccn_sheet(df):
+def extract_ccn_sheet(df, struck=()):
     """
     Colonnes : Designation (mnemonique) | Nom Literal | Type option | ...
     Les lignes marquees 'NON' en Type option ne sont PAS retenues : les
     inclure produisait de fausses entrees 'presentes dans l'Excel'.
+    `struck` : index des lignes barrees, ecartees comme non retenues.
     """
     functions, labels, skipped = set(), [], set()
 
@@ -81,7 +82,9 @@ def extract_ccn_sheet(df):
     if header_row is None:
         return functions, labels, skipped
 
-    for _, row in df.iloc[header_row + 1:].iterrows():
+    for index, row in df.iloc[header_row + 1:].iterrows():
+        if index in struck:
+            continue
         code = cell(row, columns, "Designation")
         if not code or is_section_title(code):
             continue
@@ -167,10 +170,10 @@ CAL_STOP = "FONCTIONSOUEQUIPEMENTSINTERFACES"
 def _cal_function_rows(df):
     """
     Lignes de la zone des fonctions de l'onglet CAL (entre CAL_START et
-    CAL_STOP) portant un code en colonne A. Rend (code, libelle, row).
+    CAL_STOP) portant un code en colonne A. Rend (index, code, libelle, row).
     """
     started = False
-    for _, row in df.iterrows():
+    for index, row in df.iterrows():
         code = clean_code(row.iloc[0]) if len(row) > 0 else None
         label = clean_code(row.iloc[1]) if len(row) > 1 else None
         if label and CAL_STOP in normalize(label):
@@ -179,10 +182,10 @@ def _cal_function_rows(df):
             started = True
             continue
         if started and code:
-            yield code, label, row
+            yield index, code, label, row
 
 
-def _cal_blocks(df, decision_col=3, selection_col=4):
+def _cal_blocks(df, struck=(), decision_col=3, selection_col=4):
     """
     Codes de CAL_WHOLE_SHEET_CODES dont le bloc compte au moins une
     sous-ligne retenue, cherches sur tout l'onglet.
@@ -193,30 +196,42 @@ def _cal_blocks(df, decision_col=3, selection_col=4):
         code = clean_code(row.iloc[0]) if len(row) > 0 else None
         if not code or normalize(code) not in CAL_WHOLE_SHEET_CODES:
             continue
-        for _, sub in rows[position + 1:]:
+        for sub_index, sub in rows[position + 1:]:
             if len(sub) > 0 and clean_code(sub.iloc[0]):
                 break                      # ligne de code suivante : fin du bloc
             decision = clean_code(sub.iloc[decision_col]) if decision_col < len(sub) else None
             selection = clean_code(sub.iloc[selection_col]) if selection_col < len(sub) else None
+            if is_struck_out(sub_index, selection, struck):
+                continue
             if is_retained_choice(decision, selection):
                 retained.add(code)
                 break
     return retained
 
 
-def extract_cal_sheet(df, decision_col=3, selection_col=4):
+def is_struck_out(index, selection, struck):
+    """
+    Ligne barree donc non retenue. Regle ICE : une mention dans la colonne
+    de selection reste prioritaire sur le barre, quel que soit son sens.
+    """
+    return index in struck and not normalize(selection)
+
+
+def extract_cal_sheet(df, struck=(), decision_col=3, selection_col=4):
     """
     Retourne (functions, labels, block_codes).
     block_codes : codes a bloc retenus (voir CAL_WHOLE_SHEET_CODES).
     """
     functions, labels = set(), []
-    block_codes = _cal_blocks(df, decision_col, selection_col)
+    block_codes = _cal_blocks(df, struck, decision_col, selection_col)
 
-    for code, label, row in _cal_function_rows(df):
+    for index, code, label, row in _cal_function_rows(df):
         if normalize(code) in CAL_IGNORED_CODES:
             continue
         decision = clean_code(row.iloc[decision_col]) if decision_col < len(row) else None
         selection = clean_code(row.iloc[selection_col]) if selection_col < len(row) else None
+        if is_struck_out(index, selection, struck):
+            continue
         if is_retained_choice(decision, selection):
             functions.add(code)
             if label:
@@ -237,7 +252,7 @@ DPC_BLOCK_RE = re.compile(r"\(([^)]*?)\s+dans\s+DPC", re.IGNORECASE)
 COLON_CODE_RE = re.compile(r":\s*([A-Za-z0-9_.\-]+)")
 
 
-def extract_equipment_sheet(df, sheet_name):
+def extract_equipment_sheet(df, sheet_name, struck=()):
     """
     Retourne (codes, mnemonics, labels).
       codes     : codes directement exploitables comme LibelleCourtObjetFonction
@@ -262,7 +277,9 @@ def extract_equipment_sheet(df, sheet_name):
     # Harmonique' y produirait un mnemonique 'MAX').
     comment_cols = [columns[key] for key in ("INFORMATIONSCLI",) if key in columns]
 
-    for _, row in df.iloc[header_row + 1:].iterrows():
+    for index, row in df.iloc[header_row + 1:].iterrows():
+        if index in struck:
+            continue
         mnemonic = clean_code(row.iloc[mnemonic_col]) if mnemonic_col < len(row) else None
         designation = clean_code(row.iloc[designation_col]) if designation_col < len(row) else None
         option = clean_code(row.iloc[option_col]) if option_col is not None and option_col < len(row) else None
@@ -321,6 +338,73 @@ def extract_equipment_sheet(df, sheet_name):
 # Point d'entree
 # --------------------------------------------------------------------------
 
+def read_struck_rows(file, filename=None):
+    """
+    Lignes barrees du classeur : {onglet: {index de ligne}}.
+
+    Une option barree signifie 'non retenue' (regle ICE), mais la colonne de
+    selection reste prioritaire quand elle porte une mention.
+
+    pandas ne remonte pas la mise en forme : le fichier est relu une seconde
+    fois, avec xlrd pour les .xls et openpyxl pour les .xlsx. Les index de
+    ligne correspondent a ceux des DataFrames lus avec header=None.
+    Renvoie {} si la mise en forme n'est pas lisible (PDF, fichier protege).
+    """
+    name = filename or (file if isinstance(file, str) else "") or ""
+    try:
+        if hasattr(file, "seek"):
+            file.seek(0)
+        if str(name).lower().endswith(".xlsx"):
+            return _struck_rows_xlsx(file)
+        return _struck_rows_xls(file)
+    except Exception:                                   # noqa: BLE001
+        return {}
+    finally:
+        if hasattr(file, "seek"):
+            file.seek(0)
+
+
+def _struck_rows_xlsx(file):
+    from openpyxl import load_workbook
+
+    struck = {}
+    workbook = load_workbook(file)
+    for sheet in workbook.worksheets:
+        rows = {
+            index for index, row in enumerate(sheet.iter_rows())
+            if any(cell.value is not None and str(cell.value).strip()
+                   and cell.font is not None and cell.font.strike
+                   for cell in row)
+        }
+        if rows:
+            struck[sheet.title] = rows
+    return struck
+
+
+def _struck_rows_xls(file):
+    import xlrd
+
+    if isinstance(file, str):
+        workbook = xlrd.open_workbook(file, formatting_info=True)
+    else:
+        workbook = xlrd.open_workbook(file_contents=file.read(),
+                                      formatting_info=True)
+    struck = {}
+    for sheet in workbook.sheets():
+        rows = set()
+        for index in range(sheet.nrows):
+            for column in range(sheet.ncols):
+                if not str(sheet.cell_value(index, column)).strip():
+                    continue
+                style = workbook.xf_list[sheet.cell_xf_index(index, column)]
+                if workbook.font_list[style.font_index].struck_out:
+                    rows.add(index)
+                    break
+        if rows:
+            struck[sheet.name] = rows
+    return struck
+
+
 def load_workbook_context(file, max_rows=30):
     """
     Lit un classeur une seule fois et renvoie ce dont le matcher a besoin :
@@ -350,7 +434,7 @@ def load_workbook_context(file, max_rows=30):
     return xls, sheet_names, rows
 
 
-def parse_excel_file(file, filename=None):
+def parse_excel_file(file, filename=None, struck_rows=None):
     xls = file if isinstance(file, pd.ExcelFile) else pd.ExcelFile(file)
     # Seuls les onglets exploites sont lus : les onglets 'DOC ...' des
     # nomenclatures DIFB pesent plusieurs dizaines de Mo et ne servent pas.
@@ -362,14 +446,16 @@ def parse_excel_file(file, filename=None):
                if name in wanted else pd.DataFrame())
         for name in xls.sheet_names
     }
-    return parse_sheet_frames(frames)
+    return parse_sheet_frames(frames, struck_rows)
 
 
-def parse_sheet_frames(frames):
+def parse_sheet_frames(frames, struck_rows=None):
     """
     Coeur de l'analyse, commun aux classeurs Excel et aux nomenclatures PDF.
-    `frames` : {nom d'onglet: DataFrame sans en-tete}.
+    `frames`      : {nom d'onglet: DataFrame sans en-tete}.
+    `struck_rows` : {nom d'onglet: index des lignes barrees}, vide pour un PDF.
     """
+    struck_rows = struck_rows or {}
     sheet_names = list(frames)
     buckets = classify_sheets(sheet_names)
 
@@ -391,7 +477,8 @@ def parse_sheet_frames(frames):
 
     if result["is_tg"]:
         for sheet_name in buckets["cal"]:
-            functions, labels, block_codes = extract_cal_sheet(frames[sheet_name])
+            functions, labels, block_codes = extract_cal_sheet(
+                frames[sheet_name], struck_rows.get(sheet_name, ()))
             result["FonctionsNumériséesCCN"].update(functions)
             result["cal_block_codes"].update(block_codes)
             result["labels"].extend(labels)
@@ -400,7 +487,8 @@ def parse_sheet_frames(frames):
         return result
 
     for sheet_name in buckets["ccn"]:
-        functions, labels, skipped = extract_ccn_sheet(frames[sheet_name])
+        functions, labels, skipped = extract_ccn_sheet(
+            frames[sheet_name], struck_rows.get(sheet_name, ()))
         # Conserve par onglet : les nomenclatures AUT.POS multi-tension
         # rattachent chaque onglet CCN a une tranche differente.
         result["ccn_by_sheet"][sheet_name] = {
@@ -413,7 +501,7 @@ def parse_sheet_frames(frames):
 
     for sheet_name in buckets["bt"] + buckets["tac"]:
         codes, mnemonics, labels, designations = extract_equipment_sheet(
-            frames[sheet_name], sheet_name
+            frames[sheet_name], sheet_name, struck_rows.get(sheet_name, ())
         )
         result["EquipementsTiers"].update(codes)
         result["mnemonics"].update(mnemonics)
